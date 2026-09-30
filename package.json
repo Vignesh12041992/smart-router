@@ -28,9 +28,9 @@
     "cli"
   ],
   "scripts": {
-    "build": "tsc",
-    "start": "tsc && node dist/cli.js serve",
-    "test": "tsc && node --test",
+    "build": "tsc && node -e \"require('fs').chmodSync('dist/cli.js', 0o755)\"",
+    "start": "npm run build && node dist/cli.js serve",
+    "test": "npm run build && node --test",
     "prepublishOnly": "npm run build"
   },
   "dependencies": {

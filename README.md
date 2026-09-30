@@ -31,10 +31,10 @@ npx laya-smart-router route "hello"
 pipx install laya-smart-router
 ```
 
-Not published yet? Install straight from GitHub:
+Not published to npm yet? Install straight from GitHub:
 
 ```sh
-npm install -g github:vignesh12041992/smart-router
+npm install -g https://github.com/Vignesh12041992/smart-router/tarball/main
 pipx install "git+https://github.com/vignesh12041992/smart-router.git#subdirectory=python"
 ```
 

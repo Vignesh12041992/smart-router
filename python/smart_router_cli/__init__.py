@@ -15,7 +15,7 @@ from pathlib import Path
 __version__ = "1.0.0"
 
 NPM_PACKAGE = "laya-smart-router"
-GIT_FALLBACK = "github:vignesh12041992/smart-router"
+GIT_FALLBACK = "https://github.com/Vignesh12041992/smart-router/tarball/main"
 MIN_NODE_MAJOR = 20
 
 
