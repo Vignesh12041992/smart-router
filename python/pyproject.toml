@@ -1,0 +1,21 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "laya-smart-router"
+version = "1.0.0"
+description = "Pick the best local Ollama model for any prompt (pipx wrapper for the laya-smart-router npm package)"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+keywords = ["llm", "router", "ollama", "laya", "cli"]
+
+[project.urls]
+Homepage = "https://github.com/vignesh12041992/smart-router"
+
+[project.scripts]
+smart-router = "smart_router_cli:main"
+
+[tool.setuptools]
+packages = ["smart_router_cli"]

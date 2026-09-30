@@ -1,152 +1,181 @@
-// import { Laya } from "@receptron/laya";
-// import { ROUTING_TIERS } from "../config/registry.js";
-
-// export class SmartRouter {
-//   private layaInstance: any;
-//   private localOllamaModels: string[] = [];
-
-//   async init() {
-//     try {
-//       const response = await fetch("http://localhost:11434/api/tags");
-//       if (!response.ok) throw new Error("Ollama unreachable");
-//       const data = await response.json() as { models: Array<{ name: string }> };
-//       this.localOllamaModels = data.models.map(m => m.name);
-//       console.log("📦 Detected local Ollama models:", this.localOllamaModels);
-//     } catch (e) {
-//       console.error("🚨 Failed to connect to local Ollama. UI will fall back to simulation.");
-//     }
-//     this.layaInstance = await Laya.load();
-//   }
-
-//   async routeTask(prompt: string) {
-//     if (!this.layaInstance) throw new Error("Router not initialized.");
-
-//     // Map the static tier keys to Laya instructions
-//     const criteria: Record<string, string> = {};
-//     ROUTING_TIERS.forEach(tier => {
-//       criteria[tier.key] = tier.description;
-//     });
-
-//     const result = await this.layaInstance.systemOne(
-//       { prompt },
-//       {
-//         classification: {
-//           type: "choice",
-//           instructions: "Which specialized technical tier handles this prompt context best?",
-//           criteria
-//         },
-//         complexity: {
-//           type: "score",
-//           instructions: "Rate the structural and architectural logic complexity.",
-//           criteria: ["trivial conversation", "moderate editing", "complex programming logic", "extreme systemic deduction"]
-//         }
-//       }
-//     );
-
-//     const matchedTierKey = result.answers.classification.choice as string;
-//     const score = result.answers.complexity.score as number;
-//     const confidence = result.answers.classification.probabilities[matchedTierKey] as number;
-
-//     // Find the best available match from Ollama inventory for the selected tier
-//     const resolvedModelName = this.resolveOllamaModel(matchedTierKey);
-
-//     return {
-//       tier: matchedTierKey,
-//       modelName: resolvedModelName,
-//       complexityScore: score.toFixed(2),
-//       routingConfidence: (confidence * 100).toFixed(1) + "%"
-//     };
-//   }
-
-//   private resolveOllamaModel(tierKey: string): string {
-//     if (this.localOllamaModels.length === 0) return "No local models available";
-    
-//     const tier = ROUTING_TIERS.find(t => t.key === tierKey);
-//     if (!tier) return this.localOllamaModels[0];
-
-//     // Attempt matching keywords against local models
-//     for (const kw of tier.fallbackKeywords) {
-//       const match = this.localOllamaModels.find(m => m.toLowerCase().includes(kw.toLowerCase()));
-//       if (match) return match;
-//     }
-
-//     // Fallbacks if target tier matches aren't pulled locally
-//     if (tierKey === "coder") {
-//       const backupCoder = this.localOllamaModels.find(m => m.includes("code") || m.includes("qwen"));
-//       if (backupCoder) return backupCoder;
-//     }
-
-//     return this.localOllamaModels[0]; // Absorb using primary default model line
-//   }
-// }
-
-import { Laya } from "@receptron/laya";
-import { PutCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
-import { dbClient, ROUTING_TIERS } from "../config/registry.js";
+import { DEFAULT_MODELS, DEFAULT_OLLAMA_URL, ROUTING_TIERS, type TierKey } from "../config/registry.js";
 import { MemoryCacheService } from "./cache.js";
+import { listOllamaModels } from "./ollama.js";
+
+/**
+ * "laya"    - use the Laya model (downloads ~1.7 GB on first run).
+ * "keyword" - fast offline word matching, no download.
+ * "auto"    - try Laya, fall back to keyword if it cannot load.
+ */
+export type Engine = "auto" | "laya" | "keyword";
+
+export interface RouteDecision {
+  tier: TierKey;
+  modelName: string;
+  complexityScore: string;
+  confidence: string;
+  engine: "laya" | "keyword";
+  cached: boolean;
+}
+
+export interface RouterOptions {
+  engine?: Engine;
+  ollamaUrl?: string;
+  /** Skip asking Ollama for installed models (useful for tests). */
+  models?: string[];
+  /** Print progress messages (goes to stderr so stdout stays clean). */
+  log?: (msg: string) => void;
+  /** Inject a Laya-like object (used by tests). */
+  laya?: LayaLike;
+}
+
+export interface LayaLike {
+  systemOne(state: unknown, questions: any): Promise<any>;
+  close?(): Promise<void>;
+}
+
+const COMPLEXITY_LEVELS = ["conversational", "scripts", "architecture", "deep multi-step reasoning"];
 
 export class IntelligentRouter {
-  private laya: any;
-  private cache = new MemoryCacheService();
-  private ollamaModels: string[] = [];
+  readonly ollamaUrl: string;
+  private engine: Engine;
+  private laya?: LayaLike;
+  private cache = new MemoryCacheService<Omit<RouteDecision, "cached">>();
+  private log: (msg: string) => void;
+  ollamaModels: string[] = [];
+  ollamaOnline = false;
 
-  async init() {
-    // Sync table state in Floci local database context
-    try {
-      this.ollamaModels = ["phi:latest", "qwen2.5-coder:7b", "deepseek-r1:8b", "llama3:latest"];
-      console.log("📡 Connected to Floci Infrastructure Stack.");
-    } catch {}
-    this.laya = await Laya.load();
+  constructor(private opts: RouterOptions = {}) {
+    this.engine = opts.engine ?? "auto";
+    this.ollamaUrl = opts.ollamaUrl ?? DEFAULT_OLLAMA_URL;
+    this.log = opts.log ?? (() => {});
+    this.laya = opts.laya;
   }
 
-  async processRequest(prompt: string) {
-    // 1. Check EverOS for a cached decision to guarantee deterministic outputs
-    const cachedDecision = await this.cache.checkCache(prompt);
-    if (cachedDecision) {
-      return { ...cachedDecision, cached: true };
-    }
+  get activeEngine(): "laya" | "keyword" {
+    return this.laya ? "laya" : "keyword";
+  }
 
-    // 2. Execute Laya System-1 parsing across technical tiers if it's a new prompt
-    const criteria: Record<string, string> = {};
-    ROUTING_TIERS.forEach(t => { criteria[t.key] = t.description; });
+  async init(): Promise<void> {
+    await this.refreshModels();
+    if (this.laya || this.engine === "keyword") return;
 
-    const result = await this.laya.systemOne(
-      { prompt },
-      {
-        classification: { type: "choice", instructions: "Map core programming or context domain.", criteria },
-        complexity: { type: "score", instructions: "Rate the technical density required.", criteria: ["conversational", "scripts", "architecture"] }
-      }
-    );
-
-    const tier = result.answers.classification.choice;
-    const score = result.answers.complexity.score;
-    const conf = result.answers.classification.probabilities[tier];
-
-    const modelName = this.matchOllama(tier);
-    const decision = { modelName, complexityScore: score.toFixed(2), confidence: (conf * 100).toFixed(1) + "%" };
-
-    // 3. Persist transaction into Floci DynamoDB ledger logs for operational audit trails
     try {
-      await dbClient.send(new PutCommand({
-        TableName: "RouterAuditHistory",
-        Item: { PromptId: Date.now().toString(), PromptText: prompt, TargetModel: modelName, Complexity: score }
-      }));
-    } catch {}
+      this.log("Loading Laya model (first run downloads ~1.7 GB)...");
+      const { Laya } = await import("@receptron/laya");
+      this.laya = await Laya.load({
+        onProgress: progressPrinter(this.log)
+      });
+      this.log("Laya model ready.");
+    } catch (err: any) {
+      if (this.engine === "laya") throw new Error(`Could not load Laya model: ${err?.message ?? err}`);
+      this.log(`Laya unavailable (${err?.message ?? err}). Using keyword engine instead.`);
+    }
+  }
 
+  async refreshModels(): Promise<void> {
+    if (this.opts.models) {
+      this.ollamaModels = this.opts.models;
+      this.ollamaOnline = true;
+      return;
+    }
+    try {
+      this.ollamaModels = await listOllamaModels(this.ollamaUrl);
+      this.ollamaOnline = true;
+    } catch {
+      this.ollamaOnline = false;
+      this.ollamaModels = [];
+    }
+  }
+
+  async processRequest(prompt: string): Promise<RouteDecision> {
+    if (!prompt || !prompt.trim()) throw new Error("Prompt is empty.");
+
+    const cached = this.cache.get(prompt);
+    if (cached) return { ...cached, cached: true };
+
+    const { tier, score, conf } = this.laya ? await this.classifyWithLaya(prompt) : classifyWithKeywords(prompt);
+    const decision = {
+      tier,
+      modelName: this.matchModel(tier),
+      complexityScore: score.toFixed(2),
+      confidence: (conf * 100).toFixed(1) + "%",
+      engine: this.activeEngine
+    };
+    this.cache.set(prompt, decision);
     return { ...decision, cached: false };
   }
 
-  private matchOllama(tierKey: string): string {
-    const tier = ROUTING_TIERS.find(t => t.key === tierKey);
-    if (!tier) return "llama3:latest";
-    for (const kw of tier.fallbackKeywords) {
-      const found = this.ollamaModels.find(m => m.includes(kw));
-      if (found) return found;
-    }
-    return "llama3:latest";
+  async close(): Promise<void> {
+    await this.laya?.close?.();
   }
 
-  async saveResponseToMemory(prompt: string, response: string, decision: any) {
-    await this.cache.saveMemory(prompt, response, decision);
+  private async classifyWithLaya(prompt: string) {
+    const criteria: Record<string, string> = {};
+    ROUTING_TIERS.forEach(t => { criteria[t.key] = t.description; });
+
+    const result = await this.laya!.systemOne(
+      { prompt },
+      {
+        classification: { type: "choice", instructions: "Map core programming or context domain.", criteria },
+        complexity: { type: "score", instructions: "Rate the technical density required.", criteria: COMPLEXITY_LEVELS }
+      }
+    );
+    const tier = result.answers.classification.choice as TierKey;
+    return {
+      tier,
+      score: Number(result.answers.complexity.score),
+      conf: Number(result.answers.classification.probabilities[tier])
+    };
   }
+
+  /** Picks the best installed Ollama model for a tier. */
+  matchModel(tierKey: TierKey): string {
+    const models = this.ollamaModels.length > 0 ? this.ollamaModels : DEFAULT_MODELS;
+    const tier = ROUTING_TIERS.find(t => t.key === tierKey);
+    for (const kw of tier?.fallbackKeywords ?? []) {
+      const found = models.find(m => m.toLowerCase().includes(kw.toLowerCase()));
+      if (found) return found;
+    }
+    return models[0];
+  }
+}
+
+/** Offline router: counts hint words per tier and estimates complexity from length and keywords. */
+export function classifyWithKeywords(prompt: string): { tier: TierKey; score: number; conf: number } {
+  const text = ` ${prompt.toLowerCase().replace(/[^a-z0-9+#.\s]/g, " ").replace(/\s+/g, " ")} `;
+  const counts = ROUTING_TIERS.map(t => ({
+    key: t.key,
+    hits: t.hintWords.filter(w => text.includes(` ${w} `) || text.includes(` ${w}s `)).length
+  }));
+
+  const words = prompt.trim().split(/\s+/).length;
+  const total = counts.reduce((sum, c) => sum + c.hits, 0);
+  let best = counts.reduce((a, b) => (b.hits > a.hits ? b : a));
+  if (best.hits === 0) best = { key: words <= 6 ? "micro" : "general", hits: 0 };
+
+  const conf = total === 0 ? 0.5 : 0.5 + 0.5 * (best.hits / total);
+
+  const base = { micro: 0.3, general: 1.0, coder: 1.4, reasoner: 2.0 }[best.key];
+  const lengthBoost = Math.min(1, words / 150);
+  const score = Math.min(3, base + lengthBoost);
+
+  return { tier: best.key, score, conf };
+}
+
+function progressPrinter(log: (msg: string) => void) {
+  let lastFile = "";
+  let lastPct = -10;
+  return ({ file, received, total }: { file: string; received: number; total: number | null }) => {
+    if (file !== lastFile) {
+      lastFile = file;
+      lastPct = -10;
+    }
+    if (!total) return;
+    const pct = Math.floor((received / total) * 100);
+    if (pct >= lastPct + 10) {
+      lastPct = pct;
+      log(`  downloading ${file}: ${pct}%`);
+    }
+  };
 }
