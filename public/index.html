@@ -1,0 +1,229 @@
+<!-- <!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>System-1 Intelligent Task Router</title>
+  <style>
+    :root {
+      --bg: #0f172a; --card: #1e293b; --text: #f8fafc; --accent: #38bdf8;
+    }
+    body {
+      font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); margin: 0; padding: 2rem;
+    }
+    .container { max-width: 900px; margin: 0 auto; }
+    h1 { color: var(--accent); margin-bottom: 0.5rem; }
+    .subtitle { color: #94a3b8; margin-bottom: 2rem; }
+    textarea {
+      width: 100%; height: 120px; background: var(--card); border: 1px solid #334155;
+      border-radius: 8px; color: #fff; padding: 1rem; box-sizing: border-box; font-size: 1rem; resize: vertical;
+    }
+    button {
+      background: var(--accent); color: var(--bg); border: none; padding: 0.75rem 1.5rem;
+      border-radius: 6px; font-weight: bold; cursor: pointer; margin-top: 1rem; font-size: 1rem;
+    }
+    button:hover { opacity: 0.9; }
+    .dashboard {
+      display: grid; grid-template-columns: repeat(3, 1fr); gap: 1rem; margin-top: 2rem;
+    }
+    .metric {
+      background: var(--card); padding: 1rem; border-radius: 8px; border: 1px solid #334155; text-align: center;
+    }
+    .metric-val { font-size: 1.5rem; font-weight: bold; color: var(--accent); margin-top: 0.25rem; }
+    .output-box {
+      margin-top: 2rem; background: #020617; border: 1px solid #1e293b; padding: 1.5rem;
+      border-radius: 8px; min-height: 150px; white-space: pre-wrap; font-family: monospace; line-height: 1.5;
+    }
+    .tag { font-size: 0.8rem; text-transform: uppercase; color: #64748b; font-weight: bold; }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>System-1 Task Router</h1>
+    <div class="subtitle">Automated intent-routing engine powered by Laya & Local Ollama instances.</div>
+
+    <textarea id="promptInput" placeholder="Type or paste any arbitrary prompt task here (e.g., standard chat, python engineering tasks, or complex analysis)..."></textarea>
+    <button id="sendBtn" onclick="processPrompt()">Route & Execute Prompt</button>
+
+    <div class="dashboard">
+      <div class="metric">
+        <div class="tag">Assigned Model Target</div>
+        <div id="mModel" class="metric-val">-</div>
+      </div>
+      <div class="metric">
+        <div class="tag">Complexity Score (0-3)</div>
+        <div id="mScore" class="metric-val">-</div>
+      </div>
+      <div class="metric">
+        <div class="tag">Routing Confidence</div>
+        <div id="mConf" class="metric-val">-</div>
+      </div>
+    </div>
+
+    <h3>Output Stream Pipeline</h3>
+    <div id="output" class="output-box">Response will stream live here...</div>
+  </div>
+
+  <script>
+    async function processPrompt() {
+      const prompt = document.getElementById("promptInput").value.trim();
+      if (!prompt) return alert("Please write a prompt input task first.");
+
+      const btn = document.getElementById("sendBtn");
+      const output = document.getElementById("output");
+      btn.disabled = true;
+      output.innerText = "Analyzing task payload via Laya...";
+
+      try {
+        // Step 1: Query the System-1 Analysis engine
+        const analyzeRes = await fetch("/api/analyze", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt })
+        });
+        
+        const metrics = await analyzeRes.json();
+        
+        document.getElementById("mModel").innerText = metrics.modelName;
+        document.getElementById("mScore").innerText = metrics.complexityScore;
+        document.getElementById("mConf").innerText = metrics.routingConfidence;
+
+        // Step 2: Stream live generation outputs via Server-Sent Events
+        output.innerText = "";
+        const encodedModel = encodeURIComponent(metrics.modelName);
+        const encodedPrompt = encodeURIComponent(prompt);
+        
+        const eventSource = new EventSource(`/api/generate?model=${encodedModel}&prompt=${encodedPrompt}`);
+        
+        eventSource.onmessage = (event) => {
+          if (event.data === "[DONE]") {
+            eventSource.close();
+            btn.disabled = false;
+            return;
+          }
+          const data = JSON.parse(event.data);
+          if (data.text) {
+            output.innerText += data.text;
+          }
+        };
+
+        eventSource.onerror = () => {
+          eventSource.close();
+          btn.disabled = false;
+        };
+
+      } catch (err) {
+        output.innerText = "Error encountered during routing validation pipeline.";
+        btn.disabled = false;
+      }
+    }
+  </script>
+</body>
+</html> -->
+
+
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"><title>Enterprise System-1 Matrix Router</title>
+  <style>
+    body { font-family: system-ui, sans-serif; background: #0b0f19; color: #f1f5f9; display: flex; height: 100vh; margin: 0; }
+    .sidebar { width: 300px; background: #111827; border-right: 1px solid #1f2937; padding: 1.5rem; display: flex; flex-direction: column; }
+    .main-content { flex: 1; padding: 2.5rem; overflow-y: auto; }
+    h2, h3 { color: #38bdf8; margin-top: 0; }
+    textarea { width: 100%; height: 110px; background: #1f2937; border: 1px solid #374151; border-radius: 8px; color: #fff; padding: 1rem; font-size: 1rem; resize: none; box-sizing: border-box; }
+    button { background: #38bdf8; color: #0b0f19; border: none; padding: 0.75rem 1.5rem; border-radius: 6px; font-weight: bold; cursor: pointer; margin-top: 1rem; }
+    .metrics { display: flex; gap: 1rem; margin: 1.5rem 0; }
+    .card { flex: 1; background: #1e293b; padding: 1rem; border-radius: 8px; text-align: center; border: 1px solid #334155; }
+    .val { font-size: 1.4rem; font-weight: bold; color: #38bdf8; margin-top: 0.25rem; }
+    .terminal { background: #020617; border: 1px solid #1e293b; padding: 1.5rem; border-radius: 8px; min-height: 200px; font-family: monospace; white-space: pre-wrap; }
+    .hist-item { background: #1f2937; padding: 0.75rem; border-radius: 6px; margin-bottom: 0.75rem; font-size: 0.85rem; border-left: 4px solid #38bdf8; cursor: pointer; }
+    .cache-badge { background: #22c55e; color: #fff; padding: 0.2rem 0.5rem; border-radius: 4px; font-size: 0.75rem; float: right; }
+  </style>
+</head>
+<body>
+
+  <div class="sidebar">
+    <h3>EverOS Memory Logs</h3>
+    <div id="historyList">
+      <div style="color: #6b7280; font-style: italic;">No lookups recorded yet.</div>
+    </div>
+  </div>
+
+  <div class="main-content">
+    <h2>System-1 Autonomous Routing Center</h2>
+    <textarea id="txtInput" placeholder="Input execution prompt (e.g. Write a python script to verify matrix multiplication signatures)..."></textarea>
+    <button onclick="dispatchPipeline()">Compute Route & Execute</button>
+
+    <div class="metrics">
+      <div class="card"><div>Routed Target Instance</div><div id="mModel" class="val">-</div></div>
+      <div class="card"><div>Complexity Rating</div><div id="mScore" class="val">-</div></div>
+      <div class="card"><div>Cache Status</div><div id="mCache" class="val">-</div></div>
+    </div>
+
+    <h3>Active Engine Token Stream</h3>
+    <div id="term" class="terminal">Awaiting deployment command input...</div>
+  </div>
+
+  <script>
+    let logHistory = [];
+
+    async function dispatchPipeline() {
+      const prompt = document.getElementById("txtInput").value.trim();
+      if(!prompt) return;
+      
+      const term = document.getElementById("term");
+      term.innerText = "Accessing System-1 routing parameters...";
+
+      // 1. Post request to fetch Laya or EverOS routing metrics
+      const routeRes = await fetch("/api/route", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt })
+      });
+      const decision = await routeRes.json();
+
+      document.getElementById("mModel").innerText = decision.modelName;
+      document.getElementById("mScore").innerText = decision.complexityScore;
+      document.getElementById("mCache").innerText = decision.cached ? "HIT (EverOS)" : "MISS (Computed)";
+
+      // 2. Connect to Server-Sent Event text generator pipeline
+      term.innerText = "";
+      let fullResponseText = "";
+      const sse = new EventSource(`/api/stream?model=${encodeURIComponent(decision.modelName)}&prompt=${encodeURIComponent(prompt)}`);
+      
+      sse.onmessage = async (e) => {
+        if(e.data === "[DONE]") {
+          sse.close();
+          
+          // 3. Finalize task context execution inside EverOS long term memory layers
+          await fetch("/api/finalize", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ prompt, responseText: fullResponseText, decision })
+          });
+
+          updateHistoryUI(prompt, decision);
+          return;
+        }
+        const data = JSON.parse(e.data);
+        if(data.token) {
+          fullResponseText += data.token;
+          term.innerText += data.token;
+        }
+      };
+    }
+
+    function updateHistoryUI(prompt, decision) {
+      const list = document.getElementById("historyList");
+      if(logHistory.length === 0) list.innerHTML = "";
+      logHistory.push({ prompt, decision });
+
+      const item = document.createElement("div");
+      item.className = "hist-item";
+      item.innerHTML = `<b>${decision.modelName}</b> <span class="cache-badge">Saved</span><br>${prompt.substring(0,60)}...`;
+      list.prepend(item);
+    }
+  </script>
+</body>
+</html>

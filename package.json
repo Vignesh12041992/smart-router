@@ -1,0 +1,22 @@
+{
+  "name": "smart-router",
+  "version": "1.0.0",
+  "description": "Automated LLM task router using Laya System-1 decision model",
+  "main": "dist/index.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "tsc && node dist/index.js"
+  },
+  "dependencies": {
+    "@receptron/laya": "^0.1.2",
+    "@aws-sdk/client-dynamodb": "^3.500.0",
+    "@aws-sdk/lib-dynamodb": "^3.500.0",
+    "express": "^4.22.3"
+  },
+  "devDependencies": {
+    "@types/express": "^4.17.25",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  }
+}
