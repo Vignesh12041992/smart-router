@@ -24,6 +24,21 @@ test("--version and --help", async () => {
   assert.match(help.stdout, /smart-router route/);
 });
 
+test("version command and doctor", async () => {
+  assert.match((await run(["version"])).stdout, /^\d+\.\d+\.\d+/);
+  const ollama = await fakeOllama();
+  try {
+    const r = await run(["doctor", "--ollama-url", ollama.url]);
+    assert.equal(r.code, 0, r.stderr);
+    assert.match(r.stdout, /\[ok\] Node\.js/);
+    assert.match(r.stdout, /\[ok\] Ollama at .* with 4 model/);
+  } finally {
+    await ollama.close();
+  }
+  const offline = await run(["doctor", "--ollama-url", "http://127.0.0.1:1"]);
+  assert.match(offline.stdout, /\[!!\] Ollama not reachable/);
+});
+
 test("route prints JSON", async () => {
   const r = await run(["route", "-e", "keyword", "--json", "--ollama-url", "http://127.0.0.1:1", "write a python function"]);
   assert.equal(r.code, 0, r.stderr);

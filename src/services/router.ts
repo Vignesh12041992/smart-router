@@ -1,11 +1,13 @@
 import { DEFAULT_MODELS, DEFAULT_OLLAMA_URL, ROUTING_TIERS, type TierKey } from "../config/registry.js";
 import { MemoryCacheService } from "./cache.js";
 import { listOllamaModels } from "./ollama.js";
+import { existsSync } from "fs";
+import path from "path";
 
 /**
  * "laya"    - use the Laya model (downloads ~1.7 GB on first run).
  * "keyword" - fast offline word matching, no download.
- * "auto"    - try Laya, fall back to keyword if it cannot load.
+ * "auto"    - use Laya if it is already downloaded, otherwise keyword. Never downloads.
  */
 export type Engine = "auto" | "laya" | "keyword";
 
@@ -61,8 +63,14 @@ export class IntelligentRouter {
     if (this.laya || this.engine === "keyword") return;
 
     try {
-      this.log("Loading Laya model (first run downloads ~1.7 GB)...");
-      const { Laya } = await import("@receptron/laya");
+      const layaPkg = await import("@receptron/laya");
+      // "auto" never starts the big download by itself; only "laya" or `smart-router download` does.
+      if (this.engine === "auto" && !isLayaDownloaded(layaPkg)) {
+        this.log("Using the fast keyword engine. For AI routing, run once: smart-router download");
+        return;
+      }
+      this.log(this.engine === "laya" ? "Loading Laya model (first run downloads ~1.7 GB)..." : "Loading Laya model...");
+      const { Laya } = layaPkg;
       this.laya = await Laya.load({
         onProgress: progressPrinter(this.log)
       });
@@ -161,6 +169,16 @@ export function classifyWithKeywords(prompt: string): { tier: TierKey; score: nu
   const score = Math.min(3, base + lengthBoost);
 
   return { tier: best.key, score, conf };
+}
+
+/** True when every file of the Laya bundle is already in the local cache. */
+export function isLayaDownloaded(laya: {
+  defaultCacheDir(): string;
+  DEFAULT_REPO: string;
+  BUNDLE_FILES: readonly string[];
+}): boolean {
+  const dir = path.join(laya.defaultCacheDir(), laya.DEFAULT_REPO.replace("/", "--"), "main");
+  return laya.BUNDLE_FILES.every(f => existsSync(path.join(dir, f)));
 }
 
 function progressPrinter(log: (msg: string) => void) {

@@ -4,7 +4,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { parseArgs } from "util";
 import { normalizeUrl } from "./config/registry.js";
-import { IntelligentRouter, type Engine } from "./services/router.js";
+import { IntelligentRouter, isLayaDownloaded, type Engine } from "./services/router.js";
 import { streamOllama } from "./services/ollama.js";
 import { startServer } from "./server.js";
 
@@ -20,14 +20,16 @@ Usage:
   smart-router serve                Start the web dashboard
   smart-router models               List the Ollama models it can use
   smart-router download             Download the Laya model ahead of time
+  smart-router doctor               Check Node.js, Ollama and the Laya model
+  smart-router version              Show version
 
 The prompt can also be piped in:  echo "fix my python bug" | smart-router route
 
 Options:
   -e, --engine <auto|laya|keyword>  Routing engine (default: auto)
-                                    laya    = Laya AI model (~1.7 GB download on first use)
+                                    auto    = Laya if already downloaded, else keyword
+                                    laya    = Laya AI model (downloads ~1.7 GB once)
                                     keyword = fast, offline, no download
-                                    auto    = laya, falls back to keyword
       --ollama-url <url>            Ollama address (default: $OLLAMA_HOST or http://localhost:11434)
   -p, --port <number>               Port for "serve" (default: 3000)
       --host <address>              Host for "serve" (default: 127.0.0.1)
@@ -60,7 +62,7 @@ export async function main(argv: string[]): Promise<number> {
   }
   const { values, positionals } = parsed;
 
-  if (values.version) {
+  if (values.version || positionals[0] === "version") {
     console.log(pkg.version);
     return 0;
   }
@@ -151,10 +153,46 @@ export async function main(argv: string[]): Promise<number> {
       return 0;
     }
 
+    case "doctor":
+      return doctor(ollamaUrl);
+
     default:
       console.error(`Error: unknown command "${command}".\n\n${HELP}`);
       return 2;
   }
+}
+
+async function doctor(ollamaUrl?: string): Promise<number> {
+  const ok = (msg: string) => console.log(`[ok] ${msg}`);
+  const warn = (msg: string) => console.log(`[!!] ${msg}`);
+  let healthy = true;
+
+  console.log(`smart-router ${pkg.version} on ${process.platform}/${process.arch}\n`);
+
+  const nodeMajor = Number(process.versions.node.split(".")[0]);
+  if (nodeMajor >= 20) ok(`Node.js ${process.versions.node}`);
+  else {
+    warn(`Node.js ${process.versions.node} is too old. Install Node.js 20 or newer.`);
+    healthy = false;
+  }
+
+  const router = new IntelligentRouter({ engine: "keyword", ollamaUrl });
+  await router.init();
+  if (!router.ollamaOnline) warn(`Ollama not reachable at ${router.ollamaUrl}. Install it from https://ollama.com and run: ollama serve`);
+  else if (router.ollamaModels.length === 0) warn(`Ollama is running at ${router.ollamaUrl} but has no models. Try: ollama pull llama3`);
+  else ok(`Ollama at ${router.ollamaUrl} with ${router.ollamaModels.length} model(s)`);
+
+  try {
+    const laya = await import("@receptron/laya");
+    ok("Laya package installed");
+    if (isLayaDownloaded(laya)) ok(`Laya model downloaded (${laya.defaultCacheDir()})`);
+    else warn(`Laya model not downloaded yet. Run: smart-router download  (or use --engine keyword)`);
+  } catch {
+    warn("Laya package not installed. The keyword engine will be used. Reinstall to get Laya.");
+  }
+
+  console.log(healthy ? "\nReady to route." : "\nFix the items above, then run: smart-router doctor");
+  return healthy ? 0 : 1;
 }
 
 async function readStdin(): Promise<string> {

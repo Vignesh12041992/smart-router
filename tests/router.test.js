@@ -73,6 +73,22 @@ test("engine=laya fails loudly when the model cannot load", async () => {
   }
 });
 
+test("engine=auto never downloads Laya when it is not cached", async () => {
+  process.env.LAYA_CACHE = "/nonexistent-dir-for-test";
+  const origFetch = globalThis.fetch;
+  let fetched = false;
+  globalThis.fetch = async () => { fetched = true; throw new Error("should not fetch"); };
+  try {
+    const router = new IntelligentRouter({ engine: "auto", models: [] });
+    await router.init();
+    assert.equal(router.activeEngine, "keyword");
+    assert.equal(fetched, false);
+  } finally {
+    globalThis.fetch = origFetch;
+    delete process.env.LAYA_CACHE;
+  }
+});
+
 test("empty prompt is rejected", async () => {
   const router = new IntelligentRouter({ engine: "keyword", models: [] });
   await assert.rejects(router.processRequest("   "), /empty/);

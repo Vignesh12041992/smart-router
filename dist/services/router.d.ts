@@ -2,7 +2,7 @@ import { type TierKey } from "../config/registry.js";
 /**
  * "laya"    - use the Laya model (downloads ~1.7 GB on first run).
  * "keyword" - fast offline word matching, no download.
- * "auto"    - try Laya, fall back to keyword if it cannot load.
+ * "auto"    - use Laya if it is already downloaded, otherwise keyword. Never downloads.
  */
 export type Engine = "auto" | "laya" | "keyword";
 export interface RouteDecision {
@@ -52,3 +52,9 @@ export declare function classifyWithKeywords(prompt: string): {
     score: number;
     conf: number;
 };
+/** True when every file of the Laya bundle is already in the local cache. */
+export declare function isLayaDownloaded(laya: {
+    defaultCacheDir(): string;
+    DEFAULT_REPO: string;
+    BUNDLE_FILES: readonly string[];
+}): boolean;
