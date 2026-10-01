@@ -1,3 +1,55 @@
+import { Laya } from "@receptron/laya";
+import { ROUTING_TIERS } from "../config/registry.js";
+
+export class SmartRouter {
+  private layaInstance: any;
+
+  async init() {
+    // Local ONNX decision model boots up instantly on your local processor
+    this.layaInstance = await Laya.load();
+  }
+
+  async routeTask(prompt: string) {
+    if (!this.layaInstance) throw new Error("Router not initialized.");
+
+    const criteria: Record<string, string> = {};
+    ROUTING_TIERS.forEach(tier => {
+      criteria[tier.key] = tier.description;
+    });
+
+    const result = await this.layaInstance.systemOne(
+      { prompt },
+      {
+        classification: {
+          type: "choice",
+          instructions: "Which technical model tier handles this prompt context best?",
+          criteria
+        },
+        complexity: {
+          type: "score",
+          instructions: "Rate the structural and architectural logic complexity.",
+          criteria: ["trivial conversation", "moderate editing", "complex programming logic", "extreme systemic deduction"]
+        }
+      }
+    );
+
+    const matchedTierKey = result.answers.classification.choice as string;
+    const score = result.answers.complexity.score as number;
+    const confidence = result.answers.classification.probabilities[matchedTierKey] as number;
+
+    const tier = ROUTING_TIERS.find(t => t.key === matchedTierKey) || ROUTING_TIERS[3];
+
+    return {
+      modelName: tier.openRouterModel,
+      complexityScore: score.toFixed(2),
+      routingConfidence: (confidence * 100).toFixed(1) + "%"
+    };
+  }
+}
+
+
+//LOCAL WORKING CODE
+
 // import { Laya } from "@receptron/laya";
 // import { ROUTING_TIERS } from "../config/registry.js";
 
@@ -80,73 +132,75 @@
 //   }
 // }
 
-import { Laya } from "@receptron/laya";
-import { PutCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
-import { dbClient, ROUTING_TIERS } from "../config/registry.js";
-import { MemoryCacheService } from "./cache.js";
 
-export class IntelligentRouter {
-  private laya: any;
-  private cache = new MemoryCacheService();
-  private ollamaModels: string[] = [];
+// BELOW IS THE CODE FOR EVEROS AND FLOCKI
+// import { Laya } from "@receptron/laya";
+// import { PutCommand, ScanCommand } from "@aws-sdk/lib-dynamodb";
+// import { dbClient, ROUTING_TIERS } from "../config/registry.js";
+// import { MemoryCacheService } from "./cache.js";
 
-  async init() {
-    // Sync table state in Floci local database context
-    try {
-      this.ollamaModels = ["phi:latest", "qwen2.5-coder:7b", "deepseek-r1:8b", "llama3:latest"];
-      console.log("📡 Connected to Floci Infrastructure Stack.");
-    } catch {}
-    this.laya = await Laya.load();
-  }
+// export class IntelligentRouter {
+//   private laya: any;
+//   private cache = new MemoryCacheService();
+//   private ollamaModels: string[] = [];
 
-  async processRequest(prompt: string) {
-    // 1. Check EverOS for a cached decision to guarantee deterministic outputs
-    const cachedDecision = await this.cache.checkCache(prompt);
-    if (cachedDecision) {
-      return { ...cachedDecision, cached: true };
-    }
+//   async init() {
+//     // Sync table state in Floci local database context
+//     try {
+//       this.ollamaModels = ["phi:latest", "qwen2.5-coder:7b", "deepseek-r1:8b", "llama3:latest"];
+//       console.log("📡 Connected to Floci Infrastructure Stack.");
+//     } catch {}
+//     this.laya = await Laya.load();
+//   }
 
-    // 2. Execute Laya System-1 parsing across technical tiers if it's a new prompt
-    const criteria: Record<string, string> = {};
-    ROUTING_TIERS.forEach(t => { criteria[t.key] = t.description; });
+//   async processRequest(prompt: string) {
+//     // 1. Check EverOS for a cached decision to guarantee deterministic outputs
+//     const cachedDecision = await this.cache.checkCache(prompt);
+//     if (cachedDecision) {
+//       return { ...cachedDecision, cached: true };
+//     }
 
-    const result = await this.laya.systemOne(
-      { prompt },
-      {
-        classification: { type: "choice", instructions: "Map core programming or context domain.", criteria },
-        complexity: { type: "score", instructions: "Rate the technical density required.", criteria: ["conversational", "scripts", "architecture"] }
-      }
-    );
+//     // 2. Execute Laya System-1 parsing across technical tiers if it's a new prompt
+//     const criteria: Record<string, string> = {};
+//     ROUTING_TIERS.forEach(t => { criteria[t.key] = t.description; });
 
-    const tier = result.answers.classification.choice;
-    const score = result.answers.complexity.score;
-    const conf = result.answers.classification.probabilities[tier];
+//     const result = await this.laya.systemOne(
+//       { prompt },
+//       {
+//         classification: { type: "choice", instructions: "Map core programming or context domain.", criteria },
+//         complexity: { type: "score", instructions: "Rate the technical density required.", criteria: ["conversational", "scripts", "architecture"] }
+//       }
+//     );
 
-    const modelName = this.matchOllama(tier);
-    const decision = { modelName, complexityScore: score.toFixed(2), confidence: (conf * 100).toFixed(1) + "%" };
+//     const tier = result.answers.classification.choice;
+//     const score = result.answers.complexity.score;
+//     const conf = result.answers.classification.probabilities[tier];
 
-    // 3. Persist transaction into Floci DynamoDB ledger logs for operational audit trails
-    try {
-      await dbClient.send(new PutCommand({
-        TableName: "RouterAuditHistory",
-        Item: { PromptId: Date.now().toString(), PromptText: prompt, TargetModel: modelName, Complexity: score }
-      }));
-    } catch {}
+//     const modelName = this.matchOllama(tier);
+//     const decision = { modelName, complexityScore: score.toFixed(2), confidence: (conf * 100).toFixed(1) + "%" };
 
-    return { ...decision, cached: false };
-  }
+//     // 3. Persist transaction into Floci DynamoDB ledger logs for operational audit trails
+//     try {
+//       await dbClient.send(new PutCommand({
+//         TableName: "RouterAuditHistory",
+//         Item: { PromptId: Date.now().toString(), PromptText: prompt, TargetModel: modelName, Complexity: score }
+//       }));
+//     } catch {}
 
-  private matchOllama(tierKey: string): string {
-    const tier = ROUTING_TIERS.find(t => t.key === tierKey);
-    if (!tier) return "llama3:latest";
-    for (const kw of tier.fallbackKeywords) {
-      const found = this.ollamaModels.find(m => m.includes(kw));
-      if (found) return found;
-    }
-    return "llama3:latest";
-  }
+//     return { ...decision, cached: false };
+//   }
 
-  async saveResponseToMemory(prompt: string, response: string, decision: any) {
-    await this.cache.saveMemory(prompt, response, decision);
-  }
-}
+//   private matchOllama(tierKey: string): string {
+//     const tier = ROUTING_TIERS.find(t => t.key === tierKey);
+//     if (!tier) return "llama3:latest";
+//     for (const kw of tier.fallbackKeywords) {
+//       const found = this.ollamaModels.find(m => m.includes(kw));
+//       if (found) return found;
+//     }
+//     return "llama3:latest";
+//   }
+
+//   async saveResponseToMemory(prompt: string, response: string, decision: any) {
+//     await this.cache.saveMemory(prompt, response, decision);
+//   }
+// }

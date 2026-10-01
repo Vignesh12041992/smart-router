@@ -1,3 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>System-1 Routing Console</title>
+  <style>
+    :root { --bg: #0f172a; --card: #1e293b; --text: #f8fafc; --accent: #38bdf8; --error: #ef4444; }
+    body { font-family: system-ui, sans-serif; background: var(--bg); color: var(--text); margin: 0; display: flex; height: 100vh; }
+    .sidebar { width: 280px; background: #0b0f19; border-right: 1px solid #334155; padding: 1.5rem; display: flex; flex-direction: column; overflow-y: auto; }
+    .main { flex: 1; padding: 2.5rem; display: flex; flex-direction: column; overflow-y: auto; }
+    h2, h3 { color: var(--accent); margin-top: 0; }
+    textarea { width: 100%; height: 110px; background: var(--card); border: 1px solid #334155; border-radius: 8px; color: #fff; padding: 1rem; font-size: 1rem; resize: none; box-sizing: border-box; }
+    button { background: var(--accent); color: var(--bg); border: none; padding: 0.75rem 1.5rem; border-radius: 6px; font-weight: bold; cursor: pointer; margin-top: 1rem; font-size: 1rem; }
+    button:disabled { opacity: 0.5; cursor: not-allowed; }
+    .dashboard-metrics { display: flex; gap: 1rem; margin: 1.5rem 0; }
+    .metric { flex: 1; background: var(--card); padding: 1rem; border-radius: 8px; text-align: center; border: 1px solid #334155; }
+    .metric-val { font-size: 1.4rem; font-weight: bold; color: var(--accent); margin-top: 0.25rem; }
+    .terminal { background: #020617; border: 1px solid #1e293b; padding: 1.5rem; border-radius: 8px; min-height: 250px; font-family: monospace; white-space: pre-wrap; line-height: 1.5; overflow-y: auto; }
+    .error-box { color: var(--error); border-color: var(--error) !important; background: #2d1a1a !important; }
+    .hist-item { background: var(--card); padding: 0.75rem; border-radius: 6px; margin-bottom: 0.75rem; font-size: 0.85rem; border-left: 4px solid var(--accent); cursor: pointer; }
+  </style>
+</head>
+<body>
+
+  <div class="sidebar">
+    <h3>Task History</h3>
+    <div id="historyLog"><div style="color: #64748b; font-style: italic;">No items logged.</div></div>
+  </div>
+
+  <div class="main">
+    <h2>Autonomous Task Routing Gateway Panel</h2>
+    <textarea id="promptInput" placeholder="Enter full task prompt here..."></textarea>
+    <button id="sendBtn" onclick="runPipeline()">Execute Code Pipeline</button>
+
+    <div class="dashboard-metrics">
+      <div class="metric"><div>Target Assigned Model</div><div id="mModel" class="metric-val">-</div></div>
+      <div class="metric"><div>Complexity Rank</div><div id="mScore" class="metric-val">-</div></div>
+      <div class="metric"><div>Match Confidence</div><div id="mConf" class="metric-val">-</div></div>
+    </div>
+
+    <h3>Output Stream Terminal</h3>
+    <div id="outputBox" class="terminal">Awaiting execution prompt instructions...</div>
+  </div>
+
+  <script>
+    let internalLogs = [];
+
+    async function runPipeline() {
+      const prompt = document.getElementById("promptInput").value.trim();
+      if (!prompt) return;
+
+      const btn = document.getElementById("sendBtn");
+      const output = document.getElementById("outputBox");
+      
+      btn.disabled = true;
+      output.classList.remove("error-box");
+      output.innerText = "Analyzing prompt metrics and matching cloud routes...";
+
+      try {
+        const res = await fetch("/v1/chat/completions", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ 
+            messages: [{ role: "user", content: prompt }] 
+          })
+        });
+
+        // Pull dynamic metadata headers bound by our Express router layer
+        const routedModel = res.headers.get("X-Routed-Model") || "None";
+        const complexity = res.headers.get("X-Complexity-Score") || "-";
+        const confidence = res.headers.get("X-Routing-Confidence") || "-";
+
+        document.getElementById("mModel").innerText = routedModel.split('/').pop();
+        document.getElementById("mScore").innerText = complexity;
+        document.getElementById("mConf").innerText = confidence;
+
+        const data = await res.json();
+
+        if (!res.ok || data.error) {
+          throw new Error(data.error || "Server transaction processing failure.");
+        }
+
+        output.innerText = data.choices[0].message.content;
+        addHistoryItem(prompt, { modelName: routedModel, complexityScore: complexity });
+
+      } catch (e) {
+        output.classList.add("error-box");
+        output.innerText = `🚨 PIPELINE FAULT:\n${e.message}\n\nTip: Double check that you replaced 'sk-or-v1-your-actual-free-key-here' inside src/index.ts with your real key from openrouter.ai.`;
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    function addHistoryItem(prompt, decision) {
+      const logContainer = document.getElementById("historyLog");
+      if (internalLogs.length === 0) logContainer.innerHTML = "";
+      internalLogs.push({ prompt, decision });
+
+      const div = document.createElement("div");
+      div.className = "hist-item";
+      div.onclick = () => { document.getElementById("promptInput").value = prompt; };
+      div.innerHTML = `<b>${decision.modelName.split('/').pop()}</b><br>${prompt.substring(0, 45)}...`;
+      logContainer.prepend(div);
+    }
+  </script>
+</body>
+</html>
+
+
+
+<!-- LOCAL WORKING CODE -->
+
 <!-- <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -122,7 +234,9 @@
 </html> -->
 
 
-<!DOCTYPE html>
+<!-- BELOW CODE IS FOR EVEROS AND FLOCKI -->
+
+<!-- <!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8"><title>Enterprise System-1 Matrix Router</title>
@@ -226,4 +340,4 @@
     }
   </script>
 </body>
-</html>
+</html> -->

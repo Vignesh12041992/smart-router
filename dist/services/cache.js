@@ -1,5 +1,5 @@
 // import { EVEROS_ENDPOINT } from "../config/registry.js";
-
+export {};
 // export class MemoryCacheService {
 //   // Queries EverOS text history to see if an identical prompt was submitted
 //   async checkCache(prompt: string): Promise<any | null> {
@@ -16,10 +16,8 @@
 //           top_k: 1
 //         })
 //       });
-
 //       if (!res.ok) return null;
 //       const data = await res.json();
-      
 //       // If a match is found within historical memories, extract structural routing parameters
 //       if (data.results && data.results.length > 0) {
 //         const primaryMatch = data.results[0];
@@ -32,7 +30,6 @@
 //     }
 //     return null;
 //   }
-
 //   // Persists a newly completed execution route into EverOS Markdown storage files
 //   async saveMemory(prompt: string, responseText: string, decision: any) {
 //     try {
@@ -51,7 +48,6 @@
 //           meta: { decision } // Binds the metadata decision configuration attributes
 //         })
 //       });
-
 //       // Flush session buffers immediately down onto disk storage layers
 //       await fetch(`${EVEROS_ENDPOINT}/memory/flush`, {
 //         method: "POST",

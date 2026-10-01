@@ -10,8 +10,6 @@
   },
   "dependencies": {
     "@receptron/laya": "^0.1.2",
-    "@aws-sdk/client-dynamodb": "^3.500.0",
-    "@aws-sdk/lib-dynamodb": "^3.500.0",
     "express": "^4.22.3"
   },
   "devDependencies": {
