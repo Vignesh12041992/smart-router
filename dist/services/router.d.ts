@@ -1,6 +1,6 @@
 import { type TierKey } from "../config/registry.js";
 /**
- * "laya"    - use the Laya model (downloads ~1.7 GB on first run).
+ * "laya"    - use the Laya model (needs `smart-router download` first; ~2 GB).
  * "keyword" - fast offline word matching, no download.
  * "auto"    - use Laya if it is already downloaded, otherwise keyword. Never downloads.
  */

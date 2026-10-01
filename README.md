@@ -27,6 +27,7 @@ Engine:      keyword
 
 ## Contents
 
+- [Use it with Claude Code, Copilot or Devin](#use-it-with-claude-code-copilot-or-devin)
 - [Quick start](#quick-start)
 - [Install](#install)
 - [Commands](#commands)
@@ -37,6 +38,42 @@ Engine:      keyword
 - [Update and uninstall](#update-and-uninstall)
 - [Troubleshooting](#troubleshooting)
 - [Development](#development)
+
+## Use it with Claude Code, Copilot or Devin
+
+Smart Router can sit between your coding tool and OpenRouter. The tool talks to Smart Router.
+Smart Router picks a model for each prompt and forwards the request. Answers stream back.
+
+```text
+Claude Code / Copilot / Devin  --POST /v1/...-->  smart-router (localhost)  -->  OpenRouter
+                               <--- stream -----
+```
+
+```sh
+export OPENROUTER_API_KEY=sk-or-...        # get one at https://openrouter.ai/keys
+npx laya-smart-router serve                # ~5 MB install, no model download
+```
+
+Then point your tool at it:
+
+| Tool | Setting |
+| --- | --- |
+| Claude Code | `ANTHROPIC_BASE_URL=http://localhost:3000 ANTHROPIC_AUTH_TOKEN=$OPENROUTER_API_KEY claude` |
+| Copilot, Devin, Cursor, Continue, Aider (OpenAI-compatible) | Base URL `http://localhost:3000/v1`, model `smart-router/auto` |
+
+Endpoints: `POST /v1/chat/completions` (OpenAI format), `POST /v1/messages` (Anthropic format), `GET /v1/models`.
+
+How the model is chosen:
+
+- A full OpenRouter id such as `openai/gpt-4o` is used as is.
+- Anything else (`smart-router/auto`, or the `claude-*` names Claude Code sends) is routed to a tier.
+- Each tier maps to a model. All four default to `openrouter/free`. Change them with env vars:
+  `SMART_ROUTER_MICRO_MODEL`, `SMART_ROUTER_CODER_MODEL`, `SMART_ROUTER_REASONER_MODEL`, `SMART_ROUTER_GENERAL_MODEL`.
+- The key comes from `OPENROUTER_API_KEY`, or from the tool itself if it sends an `sk-or-...` key.
+- Response headers `X-Smart-Router-Tier` and `X-Smart-Router-Model` show the decision.
+
+The default engine is the offline keyword engine, so nothing large is downloaded.
+The Laya AI engine is optional: `smart-router download` installs it (~2 GB) into `~/.smart-router`.
 
 ## Quick start
 
@@ -119,7 +156,7 @@ Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
 | `smart-router run "<prompt>"`     | Route the prompt, then stream the answer from Ollama  |
 | `smart-router serve`              | Start the web dashboard at http://localhost:3000      |
 | `smart-router models`             | List your installed Ollama models                     |
-| `smart-router download`           | Download the Laya model (about 1.7 GB, one time)      |
+| `smart-router download`           | Install the optional Laya AI engine (~2 GB, one time)  |
 | `smart-router doctor`             | Check Node.js, Ollama and the Laya model              |
 | `smart-router version`            | Show the version                                      |
 | `smart-router --help`             | Show help                                             |

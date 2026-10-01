@@ -39,3 +39,23 @@ export function normalizeUrl(url) {
     const withScheme = /^https?:\/\//i.test(url) ? url : `http://${url}`;
     return withScheme.replace(/\/+$/, "");
 }
+export const DEFAULT_OPENROUTER_URL = "https://openrouter.ai/api/v1";
+/**
+ * Model used for each tier when forwarding to OpenRouter.
+ * Override one with an env var, e.g. SMART_ROUTER_CODER_MODEL=qwen/qwen3-coder:free
+ */
+export const DEFAULT_OPENROUTER_MODELS = {
+    micro: "openrouter/free",
+    coder: "openrouter/free",
+    reasoner: "openrouter/free",
+    general: "openrouter/free"
+};
+export function openRouterModels(env = process.env) {
+    const out = { ...DEFAULT_OPENROUTER_MODELS };
+    for (const key of Object.keys(out)) {
+        const override = env[`SMART_ROUTER_${key.toUpperCase()}_MODEL`];
+        if (override)
+            out[key] = override;
+    }
+    return out;
+}

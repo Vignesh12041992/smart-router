@@ -2,10 +2,12 @@ import express from "express";
 import path from "path";
 import { fileURLToPath } from "url";
 import { streamOllama } from "./services/ollama.js";
+import { mountProxy } from "./proxy.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-export function createApp(router) {
+export function createApp(router, proxy = {}) {
     const app = express();
-    app.use(express.json());
+    app.use(express.json({ limit: "50mb" })); // coding tools send large contexts
+    mountProxy(app, router, proxy);
     app.use(express.static(path.join(__dirname, "../public")));
     app.get("/api/status", (_req, res) => {
         res.json({ engine: router.activeEngine, ollamaOnline: router.ollamaOnline, models: router.ollamaModels });
@@ -35,9 +37,9 @@ export function createApp(router) {
     });
     return app;
 }
-export function startServer(router, port, host = "127.0.0.1") {
+export function startServer(router, port, host = "127.0.0.1", proxy = {}) {
     return new Promise((resolve, reject) => {
-        const server = createApp(router).listen(port, host, () => resolve(server));
+        const server = createApp(router, proxy).listen(port, host, () => resolve(server));
         server.on("error", reject);
     });
 }

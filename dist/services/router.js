@@ -1,6 +1,7 @@
 import { DEFAULT_MODELS, DEFAULT_OLLAMA_URL, ROUTING_TIERS } from "../config/registry.js";
 import { MemoryCacheService } from "./cache.js";
 import { listOllamaModels } from "./ollama.js";
+import { importLaya } from "./laya.js";
 import { existsSync } from "fs";
 import path from "path";
 const COMPLEXITY_LEVELS = ["conversational", "scripts", "architecture", "deep multi-step reasoning"];
@@ -28,7 +29,7 @@ export class IntelligentRouter {
         if (this.laya || this.engine === "keyword")
             return;
         try {
-            const layaPkg = await import("@receptron/laya");
+            const layaPkg = await importLaya();
             // "auto" never starts the big download by itself; only "laya" or `smart-router download` does.
             if (this.engine === "auto" && !isLayaDownloaded(layaPkg)) {
                 this.log("Using the fast keyword engine. For AI routing, run once: smart-router download");

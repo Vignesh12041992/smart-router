@@ -4,12 +4,14 @@ import type { Server } from "http";
 import { fileURLToPath } from "url";
 import type { IntelligentRouter } from "./services/router.js";
 import { streamOllama } from "./services/ollama.js";
+import { mountProxy, type ProxyOptions } from "./proxy.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-export function createApp(router: IntelligentRouter) {
+export function createApp(router: IntelligentRouter, proxy: ProxyOptions = {}) {
   const app = express();
-  app.use(express.json());
+  app.use(express.json({ limit: "50mb" })); // coding tools send large contexts
+  mountProxy(app, router, proxy);
   app.use(express.static(path.join(__dirname, "../public")));
 
   app.get("/api/status", (_req, res) => {
@@ -43,9 +45,9 @@ export function createApp(router: IntelligentRouter) {
   return app;
 }
 
-export function startServer(router: IntelligentRouter, port: number, host = "127.0.0.1"): Promise<Server> {
+export function startServer(router: IntelligentRouter, port: number, host = "127.0.0.1", proxy: ProxyOptions = {}): Promise<Server> {
   return new Promise((resolve, reject) => {
-    const server = createApp(router).listen(port, host, () => resolve(server));
+    const server = createApp(router, proxy).listen(port, host, () => resolve(server));
     server.on("error", reject);
   });
 }

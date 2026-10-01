@@ -1,7 +1,7 @@
 {
   "name": "laya-smart-router",
   "version": "1.0.0",
-  "description": "Pick the best local Ollama model for any prompt, using the Laya System-1 decision model",
+  "description": "Lightweight LLM router and OpenAI/Anthropic-compatible proxy for Claude Code, Copilot and Devin (forwards to OpenRouter)",
   "license": "MIT",
   "homepage": "https://github.com/Vignesh12041992/smart-router#readme",
   "bugs": {
@@ -29,6 +29,11 @@
   "keywords": [
     "llm",
     "router",
+    "openrouter",
+    "proxy",
+    "claude-code",
+    "copilot",
+    "openai",
     "ollama",
     "laya",
     "cli"
@@ -44,9 +49,6 @@
   },
   "dependencies": {
     "express": "^4.22.3"
-  },
-  "optionalDependencies": {
-    "@receptron/laya": "^0.1.2"
   },
   "devDependencies": {
     "@types/express": "^4.17.25",

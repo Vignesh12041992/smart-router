@@ -7,17 +7,20 @@ import { normalizeUrl } from "./config/registry.js";
 import { IntelligentRouter, isLayaDownloaded } from "./services/router.js";
 import { streamOllama } from "./services/ollama.js";
 import { startServer } from "./server.js";
+import { importLaya, installLaya, LAYA_HOME } from "./services/laya.js";
+import { openRouterModels } from "./config/registry.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(path.join(__dirname, "../package.json"), "utf8"));
 const HELP = `smart-router ${pkg.version}
-Pick the best local Ollama model for a prompt.
+Route prompts to the right model. Works as a drop-in API for Claude Code,
+GitHub Copilot, Devin and other coding tools (forwards to OpenRouter).
 
 Usage:
   smart-router route "<prompt>"     Show which model fits the prompt
   smart-router run "<prompt>"       Route the prompt, then answer it with Ollama
-  smart-router serve                Start the web dashboard
+  smart-router serve                Start the proxy (/v1/chat/completions, /v1/messages) and dashboard
   smart-router models               List the Ollama models it can use
-  smart-router download             Download the Laya model ahead of time
+  smart-router download             Install the optional Laya AI router (~2 GB, one time)
   smart-router doctor               Check Node.js, Ollama and the Laya model
   smart-router version              Show version
 
@@ -26,10 +29,14 @@ The prompt can also be piped in:  echo "fix my python bug" | smart-router route
 Options:
   -e, --engine <auto|laya|keyword>  Routing engine (default: auto)
                                     auto    = Laya if already downloaded, else keyword
-                                    laya    = Laya AI model (downloads ~1.7 GB once)
+                                    laya    = Laya AI model (run "smart-router download" first)
                                     keyword = fast, offline, no download
       --ollama-url <url>            Ollama address (default: $OLLAMA_HOST or http://localhost:11434)
   -p, --port <number>               Port for "serve" (default: 3000)
+
+Environment:
+  OPENROUTER_API_KEY                Key used to forward requests to OpenRouter
+  SMART_ROUTER_<TIER>_MODEL         Model per tier: MICRO, CODER, REASONER, GENERAL
       --host <address>              Host for "serve" (default: 127.0.0.1)
       --json                        Print "route" output as JSON
   -q, --quiet                       Hide progress messages
@@ -122,9 +129,16 @@ export async function main(argv) {
             const server = await startServer(router, port, values.host ?? "127.0.0.1");
             const addr = server.address();
             const actualPort = typeof addr === "object" && addr ? addr.port : port;
-            console.log(`Dashboard ready at http://${values.host ?? "localhost"}:${actualPort}  (engine: ${router.activeEngine})`);
-            if (!router.ollamaOnline)
-                console.log(`Note: Ollama not found at ${router.ollamaUrl}. Routing works, answers will not.`);
+            const base = `http://${values.host ?? "localhost"}:${actualPort}`;
+            console.log(`Smart Router running at ${base}  (engine: ${router.activeEngine})\n`);
+            console.log("Point your coding tool at it:");
+            console.log(`  Claude Code:     ANTHROPIC_BASE_URL=${base} ANTHROPIC_AUTH_TOKEN=$OPENROUTER_API_KEY claude`);
+            console.log(`  OpenAI-style:    base URL ${base}/v1, model "smart-router/auto"  (Copilot, Devin, Cursor, ...)`);
+            console.log(`  Dashboard:       ${base}\n`);
+            const tiers = openRouterModels();
+            console.log("Tier models: " + Object.entries(tiers).map(([k, v]) => `${k}=${v}`).join("  "));
+            if (!process.env.OPENROUTER_API_KEY)
+                console.log("Note: OPENROUTER_API_KEY is not set. Tools must send an OpenRouter key (sk-or-...) themselves.");
             return new Promise(() => { }); // keep running until Ctrl+C
         }
         case "models": {
@@ -140,6 +154,12 @@ export async function main(argv) {
             return 0;
         }
         case "download": {
+            try {
+                await importLaya();
+            }
+            catch {
+                await installLaya(msg => console.error(msg));
+            }
             const router = new IntelligentRouter({ engine: "laya", log: msg => console.error(msg) });
             await router.init();
             await router.close();
@@ -173,16 +193,20 @@ async function doctor(ollamaUrl) {
         warn(`Ollama is running at ${router.ollamaUrl} but has no models. Try: ollama pull llama3`);
     else
         ok(`Ollama at ${router.ollamaUrl} with ${router.ollamaModels.length} model(s)`);
+    if (process.env.OPENROUTER_API_KEY)
+        ok("OPENROUTER_API_KEY is set");
+    else
+        warn("OPENROUTER_API_KEY is not set. Get a key at https://openrouter.ai/keys (or let tools send it).");
     try {
-        const laya = await import("@receptron/laya");
+        const laya = await importLaya();
         ok("Laya package installed");
         if (isLayaDownloaded(laya))
             ok(`Laya model downloaded (${laya.defaultCacheDir()})`);
         else
-            warn(`Laya model not downloaded yet. Run: smart-router download  (or use --engine keyword)`);
+            console.log(`[--] Laya model not downloaded. Optional: smart-router download`);
     }
     catch {
-        warn("Laya package not installed. The keyword engine will be used. Reinstall to get Laya.");
+        console.log(`[--] Laya not installed. Using the fast keyword engine. Optional: smart-router download (installs to ${LAYA_HOME})`);
     }
     console.log(healthy ? "\nReady to route." : "\nFix the items above, then run: smart-router doctor");
     return healthy ? 0 : 1;
