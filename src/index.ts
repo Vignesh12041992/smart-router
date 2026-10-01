@@ -14,7 +14,7 @@ const router = new SmartRouter();
 await router.init();
 
 // 💡 MANDATORY SETUP: Replace the text below with your actual key from openrouter.ai
-const API_KEY = "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"; 
+const API_KEY = "sk-or-v1-your-actual-free-key-here"; 
 
 app.post("/v1/chat/completions", async (req, res) => {
   // 💡 Ensure your working OpenRouter key is inserted here
