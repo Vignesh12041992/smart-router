@@ -1,9 +1,9 @@
 import { Readable } from "stream";
-import { DEFAULT_OPENROUTER_URL, openRouterModels, normalizeUrl } from "./config/registry.js";
+import { DEFAULT_ANTHROPIC_URL, DEFAULT_OPENROUTER_URL, claudeModels, openRouterModels, normalizeUrl } from "./config/registry.js";
 /**
  * Adds the endpoints coding tools talk to:
  *   POST /v1/chat/completions  OpenAI format  (Copilot, Devin, Cursor, Continue, Aider, ...)
- *   POST /v1/messages          Anthropic format (Claude Code)
+ *   POST /v1/messages          Anthropic format (Claude Code) - uses Claude Code's own login by default
  *   GET  /v1/models
  * Each request is routed to a tier, then forwarded to OpenRouter. Streaming is passed straight through.
  */
@@ -11,10 +11,57 @@ export function mountProxy(app, router, opts = {}) {
     const upstream = normalizeUrl(opts.upstreamUrl ?? process.env.OPENROUTER_BASE_URL ?? DEFAULT_OPENROUTER_URL);
     const models = opts.models ?? openRouterModels();
     const serverKey = opts.apiKey ?? process.env.OPENROUTER_API_KEY;
+    const claudeProvider = opts.claudeProvider ?? (process.env.SMART_ROUTER_CLAUDE_PROVIDER === "openrouter" ? "openrouter" : "anthropic");
+    const anthropicUrl = normalizeUrl(opts.anthropicUrl ?? process.env.SMART_ROUTER_ANTHROPIC_URL ?? DEFAULT_ANTHROPIC_URL);
+    const claudeTiers = opts.claudeModels ?? claudeModels();
     app.get("/v1/models", (_req, res) => {
         const ids = ["smart-router/auto", ...new Set(Object.values(models))];
         res.json({ object: "list", data: ids.map(id => ({ id, object: "model", owned_by: "smart-router" })) });
     });
+    /**
+     * Claude Code with its own login: only the "model" field changes. The tool's own auth headers
+     * (API key or Claude subscription token) go straight to Anthropic, so no extra key is needed.
+     */
+    const passthroughClaude = (path) => async (req, res) => {
+        const body = req.body ?? {};
+        const requested = String(body.model ?? "");
+        let model = requested;
+        let tier = "manual";
+        // Claude Code uses Haiku for small background jobs (titles, summaries). Leave those alone.
+        if (!/haiku/i.test(requested) && Array.isArray(body.messages)) {
+            const prompt = lastUserText(body.messages);
+            if (prompt) {
+                const decision = await router.processRequest(prompt);
+                model = claudeTiers[decision.tier];
+                tier = decision.tier;
+            }
+        }
+        res.setHeader("X-Smart-Router-Tier", tier);
+        res.setHeader("X-Smart-Router-Model", model);
+        if (path === "messages")
+            console.error(`[smart-router] claude ${tier} ${requested} -> ${model}${body.stream ? " (stream)" : ""}`);
+        const headers = { "Content-Type": "application/json" };
+        for (const h of ["authorization", "x-api-key", "anthropic-version", "anthropic-beta"]) {
+            const v = req.headers[h];
+            if (v)
+                headers[h] = Array.isArray(v) ? v.join(",") : v;
+        }
+        await forward(res, "anthropic", `${anthropicUrl}/${path}${queryString(req)}`, headers, { ...body, model });
+    };
+    const forward = async (res, format, url, headers, body) => {
+        let upstreamRes;
+        try {
+            upstreamRes = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
+        }
+        catch (err) {
+            return sendError(res, format, 502, `Could not reach ${new URL(url).host}: ${err.message}`);
+        }
+        res.status(upstreamRes.status);
+        res.setHeader("Content-Type", upstreamRes.headers.get("content-type") ?? "application/json");
+        if (!upstreamRes.body)
+            return res.end();
+        Readable.fromWeb(upstreamRes.body).pipe(res);
+    };
     const handle = (format) => async (req, res) => {
         const body = req.body ?? {};
         const key = clientKey(req) ?? serverKey;
@@ -46,25 +93,16 @@ export function mountProxy(app, router, opts = {}) {
         };
         if (format === "anthropic")
             headers["anthropic-version"] = String(req.headers["anthropic-version"] ?? "2023-06-01");
-        let upstreamRes;
-        try {
-            upstreamRes = await fetch(`${upstream}/${format === "openai" ? "chat/completions" : "messages"}`, {
-                method: "POST",
-                headers,
-                body: JSON.stringify({ ...body, model })
-            });
-        }
-        catch (err) {
-            return sendError(res, format, 502, `Could not reach OpenRouter at ${upstream}: ${err.message}`);
-        }
-        res.status(upstreamRes.status);
-        res.setHeader("Content-Type", upstreamRes.headers.get("content-type") ?? "application/json");
-        if (!upstreamRes.body)
-            return res.end();
-        Readable.fromWeb(upstreamRes.body).pipe(res);
+        await forward(res, format, `${upstream}/${format === "openai" ? "chat/completions" : "messages"}`, headers, { ...body, model });
     };
     app.post("/v1/chat/completions", wrap(handle("openai"), "openai"));
-    app.post("/v1/messages", wrap(handle("anthropic"), "anthropic"));
+    if (claudeProvider === "anthropic") {
+        app.post("/v1/messages", wrap(passthroughClaude("messages"), "anthropic"));
+        app.post("/v1/messages/count_tokens", wrap(passthroughClaude("messages/count_tokens"), "anthropic"));
+    }
+    else {
+        app.post("/v1/messages", wrap(handle("anthropic"), "anthropic"));
+    }
 }
 /** Text of the last user message. Handles plain strings and content-part arrays (OpenAI and Anthropic). */
 export function lastUserText(messages) {
@@ -84,6 +122,10 @@ export function lastUserText(messages) {
         }
     }
     return "";
+}
+function queryString(req) {
+    const i = req.originalUrl.indexOf("?");
+    return i === -1 ? "" : req.originalUrl.slice(i);
 }
 function clientKey(req) {
     const auth = req.headers.authorization;

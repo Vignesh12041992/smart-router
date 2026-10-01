@@ -59,3 +59,23 @@ export function openRouterModels(env = process.env) {
     }
     return out;
 }
+export const DEFAULT_ANTHROPIC_URL = "https://api.anthropic.com/v1";
+/**
+ * Claude model for each tier when Claude Code is routed with its own login.
+ * Override one with an env var, e.g. SMART_ROUTER_CLAUDE_REASONER_MODEL=claude-fable-5-1
+ */
+export const DEFAULT_CLAUDE_MODELS = {
+    micro: "claude-haiku-4-5",
+    coder: "claude-sonnet-5-5",
+    reasoner: "claude-opus-5-5",
+    general: "claude-sonnet-5-5"
+};
+export function claudeModels(env = process.env) {
+    const out = { ...DEFAULT_CLAUDE_MODELS };
+    for (const key of Object.keys(out)) {
+        const override = env[`SMART_ROUTER_CLAUDE_${key.toUpperCase()}_MODEL`];
+        if (override)
+            out[key] = override;
+    }
+    return out;
+}

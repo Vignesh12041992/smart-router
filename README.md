@@ -41,36 +41,49 @@ Engine:      keyword
 
 ## Use it with Claude Code, Copilot or Devin
 
-Smart Router can sit between your coding tool and OpenRouter. The tool talks to Smart Router.
-Smart Router picks a model for each prompt and forwards the request. Answers stream back.
+Smart Router sits between your coding tool and the model provider. For each prompt it picks a
+model (small, coding, or reasoning) and forwards the request. Answers stream back.
 
-```text
-Claude Code / Copilot / Devin  --POST /v1/...-->  smart-router (localhost)  -->  OpenRouter
-                               <--- stream -----
-```
+### Claude Code: no extra key
 
 ```sh
-export OPENROUTER_API_KEY=sk-or-...        # get one at https://openrouter.ai/keys
-npx laya-smart-router serve                # ~5 MB install, no model download
+npx laya-smart-router serve                 # ~5 MB install, no model download
+ANTHROPIC_BASE_URL=http://localhost:3000 claude
 ```
 
-Then point your tool at it:
+Claude Code keeps using **your normal login** (Claude subscription or API key). Smart Router only
+changes the `model` field, then sends the request to Anthropic with your own credentials.
 
-| Tool | Setting |
-| --- | --- |
-| Claude Code | `ANTHROPIC_BASE_URL=http://localhost:3000 ANTHROPIC_AUTH_TOKEN=$OPENROUTER_API_KEY claude` |
-| Copilot, Devin, Cursor, Continue, Aider (OpenAI-compatible) | Base URL `http://localhost:3000/v1`, model `smart-router/auto` |
+| Tier | Example prompt | Default model |
+| --- | --- | --- |
+| micro | "hi", "thanks" | `claude-haiku-4-5` |
+| coder | "fix this TypeScript bug" | `claude-sonnet-5-5` |
+| reasoner | "prove this step by step" | `claude-opus-5-5` |
+| general | "write a summary" | `claude-sonnet-5-5` |
 
-Endpoints: `POST /v1/chat/completions` (OpenAI format), `POST /v1/messages` (Anthropic format), `GET /v1/models`.
+Change one with `SMART_ROUTER_CLAUDE_<TIER>_MODEL`, for example
+`SMART_ROUTER_CLAUDE_REASONER_MODEL=claude-fable-5-1`.
 
-How the model is chosen:
+- The model is picked from your latest typed message, so it stays the same while Claude Code works
+  through that task's tool calls.
+- Claude Code's own Haiku background calls (titles, summaries) are left alone.
 
-- A full OpenRouter id such as `openai/gpt-4o` is used as is.
-- Anything else (`smart-router/auto`, or the `claude-*` names Claude Code sends) is routed to a tier.
-- Each tier maps to a model. All four default to `openrouter/free`. Change them with env vars:
-  `SMART_ROUTER_MICRO_MODEL`, `SMART_ROUTER_CODER_MODEL`, `SMART_ROUTER_REASONER_MODEL`, `SMART_ROUTER_GENERAL_MODEL`.
-- The key comes from `OPENROUTER_API_KEY`, or from the tool itself if it sends an `sk-or-...` key.
-- Response headers `X-Smart-Router-Tier` and `X-Smart-Router-Model` show the decision.
+### Other tools (OpenAI format): need an OpenRouter key
+
+```sh
+export OPENROUTER_API_KEY=sk-or-...         # https://openrouter.ai/keys
+npx laya-smart-router serve
+```
+
+Set the tool's base URL to `http://localhost:3000/v1` and its model to `smart-router/auto`.
+Tier models default to `openrouter/free`. Change them with `SMART_ROUTER_<TIER>_MODEL`.
+To send Claude Code to OpenRouter too, set `SMART_ROUTER_CLAUDE_PROVIDER=openrouter`.
+
+Copilot and Devin sign in to their own services, and Smart Router cannot borrow those logins.
+They work only where the tool lets you set a custom OpenAI-compatible endpoint, with a key.
+
+Endpoints: `POST /v1/messages`, `POST /v1/messages/count_tokens`, `POST /v1/chat/completions`,
+`GET /v1/models`. Response headers `X-Smart-Router-Tier` and `X-Smart-Router-Model` show each decision.
 
 The default engine is the offline keyword engine, so nothing large is downloaded.
 The Laya AI engine is optional: `smart-router download` installs it (~2 GB) into `~/.smart-router`.

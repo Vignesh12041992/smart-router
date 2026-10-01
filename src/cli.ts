@@ -8,7 +8,7 @@ import { IntelligentRouter, isLayaDownloaded, type Engine } from "./services/rou
 import { streamOllama } from "./services/ollama.js";
 import { startServer } from "./server.js";
 import { importLaya, installLaya, LAYA_HOME } from "./services/laya.js";
-import { openRouterModels } from "./config/registry.js";
+import { claudeModels, openRouterModels } from "./config/registry.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(path.join(__dirname, "../package.json"), "utf8")) as { version: string };
@@ -37,8 +37,10 @@ Options:
   -p, --port <number>               Port for "serve" (default: 3000)
 
 Environment:
-  OPENROUTER_API_KEY                Key used to forward requests to OpenRouter
-  SMART_ROUTER_<TIER>_MODEL         Model per tier: MICRO, CODER, REASONER, GENERAL
+  SMART_ROUTER_CLAUDE_<TIER>_MODEL  Claude model per tier for Claude Code: MICRO, CODER, REASONER, GENERAL
+  OPENROUTER_API_KEY                Key for OpenAI-style tools (forwarded to OpenRouter)
+  SMART_ROUTER_<TIER>_MODEL         OpenRouter model per tier
+  SMART_ROUTER_CLAUDE_PROVIDER      Set to "openrouter" to send Claude Code to OpenRouter instead
       --host <address>              Host for "serve" (default: 127.0.0.1)
       --json                        Print "route" output as JSON
   -q, --quiet                       Hide progress messages
@@ -138,12 +140,14 @@ export async function main(argv: string[]): Promise<number> {
       const base = `http://${values.host ?? "localhost"}:${actualPort}`;
       console.log(`Smart Router running at ${base}  (engine: ${router.activeEngine})\n`);
       console.log("Point your coding tool at it:");
-      console.log(`  Claude Code:     ANTHROPIC_BASE_URL=${base} ANTHROPIC_AUTH_TOKEN=$OPENROUTER_API_KEY claude`);
-      console.log(`  OpenAI-style:    base URL ${base}/v1, model "smart-router/auto"  (Copilot, Devin, Cursor, ...)`);
+      const viaOpenRouter = process.env.SMART_ROUTER_CLAUDE_PROVIDER === "openrouter";
+      const fmt = (t: Record<string, string>) => Object.entries(t).map(([k, v]) => `${k}=${v}`).join("  ");
+      if (viaOpenRouter) console.log(`  Claude Code:     ANTHROPIC_BASE_URL=${base} ANTHROPIC_AUTH_TOKEN=$OPENROUTER_API_KEY claude`);
+      else console.log(`  Claude Code:     ANTHROPIC_BASE_URL=${base} claude      (uses your normal Claude login, no extra key)`);
+      console.log(`  OpenAI-style:    base URL ${base}/v1, model "smart-router/auto"  (needs an OpenRouter key)`);
       console.log(`  Dashboard:       ${base}\n`);
-      const tiers = openRouterModels();
-      console.log("Tier models: " + Object.entries(tiers).map(([k, v]) => `${k}=${v}`).join("  "));
-      if (!process.env.OPENROUTER_API_KEY) console.log("Note: OPENROUTER_API_KEY is not set. Tools must send an OpenRouter key (sk-or-...) themselves.");
+      if (!viaOpenRouter) console.log("Claude Code models:  " + fmt(claudeModels()));
+      console.log("OpenRouter models:   " + fmt(openRouterModels()));
       return new Promise<number>(() => {}); // keep running until Ctrl+C
     }
 
@@ -202,7 +206,7 @@ async function doctor(ollamaUrl?: string): Promise<number> {
   else ok(`Ollama at ${router.ollamaUrl} with ${router.ollamaModels.length} model(s)`);
 
   if (process.env.OPENROUTER_API_KEY) ok("OPENROUTER_API_KEY is set");
-  else warn("OPENROUTER_API_KEY is not set. Get a key at https://openrouter.ai/keys (or let tools send it).");
+  else console.log("[--] OPENROUTER_API_KEY not set. Only needed for OpenAI-style tools; Claude Code uses its own login.");
 
   try {
     const laya = await importLaya();

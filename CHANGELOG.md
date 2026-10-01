@@ -3,7 +3,8 @@
 ## Unreleased
 
 - New proxy endpoints for coding tools: `POST /v1/chat/completions` (OpenAI), `POST /v1/messages` (Anthropic / Claude Code), `GET /v1/models`.
-- Requests are routed to a tier, then forwarded to OpenRouter with streaming.
+- Claude Code uses its own login by default: only the model changes (Haiku / Sonnet / Opus per tier). No extra key.
+- OpenAI-format requests are routed to a tier, then forwarded to OpenRouter with streaming.
 - Laya is no longer installed with the package. Install size drops from ~300 MB to ~5 MB. `smart-router download` installs it on demand.
 
 ## 1.0.0
