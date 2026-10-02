@@ -1,49 +1,98 @@
-// export interface ModelTier {
-//   key: "micro" | "coder" | "reasoner" | "general";
-//   description: string;
-//   fallbackKeywords: string[];
-// }
+export type TierKey = "micro" | "coder" | "reasoner" | "general";
 
-// export const ROUTING_TIERS: ModelTier[] = [
-//   {
-//     key: "micro",
-//     description: "Ideal for basic questions, chit-chat, conversational greetings, and short, trivial text answers.",
-//     fallbackKeywords: ["phi", "gemma", "llama3.2:1b", "llama3.2:3b", "qwen2.5:0.5b", "qwen2.5:1.5b"]
-//   },
-//   {
-//     key: "coder",
-//     description: "Specialized in structural programming, writing source code, debugging scripts, and systems engineering blueprints.",
-//     fallbackKeywords: ["coder", "code", "starcoder", "deepseek-coder"]
-//   },
-//   {
-//     key: "reasoner",
-//     description: "Heavyweight reasoning model engineered explicitly for multi-step deep analysis, logical systems, and complex mathematics.",
-//     fallbackKeywords: ["deepseek-r1", "reasoning", "r1", "qwq"]
-//   },
-//   {
-//     key: "general",
-//     description: "Standard model for mixed utility tasks, generating comprehensive essays, document synthesis, and general data formats.",
-//     fallbackKeywords: ["llama3", "mistral", "qwen2.5:7b", "latest"]
-//   }
-// ];
+export interface ModelTier {
+  key: TierKey;
+  description: string;
+  fallbackKeywords: string[];
+  /** Words that hint at this tier. Used by the offline keyword engine. */
+  hintWords: string[];
+}
 
-import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
-import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
+export const DEFAULT_OLLAMA_URL = process.env.OLLAMA_HOST
+  ? normalizeUrl(process.env.OLLAMA_HOST)
+  : "http://localhost:11434";
 
-export const EVEROS_ENDPOINT = "http://localhost:8000/api/v2";
+/** Used when Ollama is not reachable, so routing still returns a sensible model name. */
+export const DEFAULT_MODELS = ["phi:latest", "qwen2.5-coder:7b", "deepseek-r1:8b", "llama3:latest"];
 
-// Configure AWS SDK v2/v3 clients targeting Floci's local wire protocol port
-const rawClient = new DynamoDBClient({
-  endpoint: "http://localhost:4566",
-  region: "us-east-1",
-  credentials: { accessKeyId: "test", secretAccessKey: "test" }
-});
-
-export const dbClient = DynamoDBDocumentClient.from(rawClient);
-
-export const ROUTING_TIERS = [
-  { key: "micro", description: "Basic greetings, chit-chat, conversational entries, and short responses.", fallbackKeywords: ["phi", "gemma", "llama3.2:1b"] },
-  { key: "coder", description: "Source code setups, structural scripts, bug fixes, and development patterns.", fallbackKeywords: ["coder", "code", "qwen"] },
-  { key: "reasoner", description: "Deep multi-step analysis framework engineering, logic systems, and math puzzles.", fallbackKeywords: ["deepseek-r1", "reasoning", "r1"] },
-  { key: "general", description: "Document write-ups, mixed general analysis summaries, and system essays.", fallbackKeywords: ["llama3", "mistral", "latest"] }
+export const ROUTING_TIERS: ModelTier[] = [
+  {
+    key: "micro",
+    description: "Basic greetings, chit-chat, conversational entries, and short responses.",
+    fallbackKeywords: ["phi", "gemma", "llama3.2:1b"],
+    hintWords: ["hi", "hello", "hey", "thanks", "thank", "how are you", "joke", "good morning", "bye"]
+  },
+  {
+    key: "coder",
+    description: "Source code setups, structural scripts, bug fixes, and development patterns.",
+    fallbackKeywords: ["coder", "code", "qwen"],
+    hintWords: [
+      "code", "function", "script", "bug", "debug", "error", "python", "javascript", "typescript", "java",
+      "rust", "golang", "sql", "api", "class", "compile", "regex", "refactor", "unit test", "npm", "git"
+    ]
+  },
+  {
+    key: "reasoner",
+    description: "Deep multi-step analysis framework engineering, logic systems, and math puzzles.",
+    fallbackKeywords: ["deepseek-r1", "reasoning", "r1"],
+    hintWords: [
+      "prove", "proof", "math", "equation", "calculate", "logic", "puzzle", "reason", "step by step",
+      "theorem", "probability", "derive", "optimize", "algorithm", "complexity"
+    ]
+  },
+  {
+    key: "general",
+    description: "Document write-ups, mixed general analysis summaries, and system essays.",
+    fallbackKeywords: ["llama3", "mistral", "latest"],
+    hintWords: ["write", "essay", "summarize", "summary", "explain", "describe", "email", "article", "story", "report"]
+  }
 ];
+
+export function normalizeUrl(url: string): string {
+  const withScheme = /^https?:\/\//i.test(url) ? url : `http://${url}`;
+  return withScheme.replace(/\/+$/, "");
+}
+
+export const DEFAULT_OPENROUTER_URL = "https://openrouter.ai/api/v1";
+
+/**
+ * Model used for each tier when forwarding to OpenRouter.
+ * Override one with an env var, e.g. SMART_ROUTER_CODER_MODEL=qwen/qwen3-coder:free
+ */
+export const DEFAULT_OPENROUTER_MODELS: Record<TierKey, string> = {
+  micro: "openrouter/free",
+  coder: "openrouter/free",
+  reasoner: "openrouter/free",
+  general: "openrouter/free"
+};
+
+export function openRouterModels(env: NodeJS.ProcessEnv = process.env): Record<TierKey, string> {
+  const out = { ...DEFAULT_OPENROUTER_MODELS };
+  for (const key of Object.keys(out) as TierKey[]) {
+    const override = env[`SMART_ROUTER_${key.toUpperCase()}_MODEL`];
+    if (override) out[key] = override;
+  }
+  return out;
+}
+
+export const DEFAULT_ANTHROPIC_URL = "https://api.anthropic.com/v1";
+
+/**
+ * Claude model for each tier when Claude Code is routed with its own login.
+ * Override one with an env var, e.g. SMART_ROUTER_CLAUDE_REASONER_MODEL=claude-fable-5-1
+ */
+export const DEFAULT_CLAUDE_MODELS: Record<TierKey, string> = {
+  micro: "claude-haiku-4-5",
+  coder: "claude-sonnet-5-5",
+  reasoner: "claude-opus-5-5",
+  general: "claude-sonnet-5-5"
+};
+
+export function claudeModels(env: NodeJS.ProcessEnv = process.env): Record<TierKey, string> {
+  const out = { ...DEFAULT_CLAUDE_MODELS };
+  for (const key of Object.keys(out) as TierKey[]) {
+    const override = env[`SMART_ROUTER_CLAUDE_${key.toUpperCase()}_MODEL`];
+    if (override) out[key] = override;
+  }
+  return out;
+}

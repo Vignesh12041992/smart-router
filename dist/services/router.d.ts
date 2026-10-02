@@ -1,0 +1,60 @@
+import { type TierKey } from "../config/registry.js";
+/**
+ * "laya"    - use the Laya model (needs `smart-router download` first; ~2 GB).
+ * "keyword" - fast offline word matching, no download.
+ * "auto"    - use Laya if it is already downloaded, otherwise keyword. Never downloads.
+ */
+export type Engine = "auto" | "laya" | "keyword";
+export interface RouteDecision {
+    tier: TierKey;
+    modelName: string;
+    complexityScore: string;
+    confidence: string;
+    engine: "laya" | "keyword";
+    cached: boolean;
+}
+export interface RouterOptions {
+    engine?: Engine;
+    ollamaUrl?: string;
+    /** Skip asking Ollama for installed models (useful for tests). */
+    models?: string[];
+    /** Print progress messages (goes to stderr so stdout stays clean). */
+    log?: (msg: string) => void;
+    /** Inject a Laya-like object (used by tests). */
+    laya?: LayaLike;
+}
+export interface LayaLike {
+    systemOne(state: unknown, questions: any): Promise<any>;
+    close?(): Promise<void>;
+}
+export declare class IntelligentRouter {
+    private opts;
+    readonly ollamaUrl: string;
+    private engine;
+    private laya?;
+    private cache;
+    private log;
+    ollamaModels: string[];
+    ollamaOnline: boolean;
+    constructor(opts?: RouterOptions);
+    get activeEngine(): "laya" | "keyword";
+    init(): Promise<void>;
+    refreshModels(): Promise<void>;
+    processRequest(prompt: string): Promise<RouteDecision>;
+    close(): Promise<void>;
+    private classifyWithLaya;
+    /** Picks the best installed Ollama model for a tier. */
+    matchModel(tierKey: TierKey): string;
+}
+/** Offline router: counts hint words per tier and estimates complexity from length and keywords. */
+export declare function classifyWithKeywords(prompt: string): {
+    tier: TierKey;
+    score: number;
+    conf: number;
+};
+/** True when every file of the Laya bundle is already in the local cache. */
+export declare function isLayaDownloaded(laya: {
+    defaultCacheDir(): string;
+    DEFAULT_REPO: string;
+    BUNDLE_FILES: readonly string[];
+}): boolean;

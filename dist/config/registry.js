@@ -1,27 +1,81 @@
-// export interface ModelConfig {
-//   id: string; // The exact Ollama model name (e.g., 'llama3:8b')
-//   name: string;
-//   description: string;
-// }
+export const DEFAULT_OLLAMA_URL = process.env.OLLAMA_HOST
+    ? normalizeUrl(process.env.OLLAMA_HOST)
+    : "http://localhost:11434";
+/** Used when Ollama is not reachable, so routing still returns a sensible model name. */
+export const DEFAULT_MODELS = ["phi:latest", "qwen2.5-coder:7b", "deepseek-r1:8b", "llama3:latest"];
 export const ROUTING_TIERS = [
     {
         key: "micro",
-        description: "Ideal for basic questions, chit-chat, conversational greetings, and short, trivial text answers.",
-        fallbackKeywords: ["phi", "gemma", "llama3.2:1b", "llama3.2:3b", "qwen2.5:0.5b", "qwen2.5:1.5b"]
+        description: "Basic greetings, chit-chat, conversational entries, and short responses.",
+        fallbackKeywords: ["phi", "gemma", "llama3.2:1b"],
+        hintWords: ["hi", "hello", "hey", "thanks", "thank", "how are you", "joke", "good morning", "bye"]
     },
     {
         key: "coder",
-        description: "Specialized in structural programming, writing source code, debugging scripts, and systems engineering blueprints.",
-        fallbackKeywords: ["coder", "code", "starcoder", "deepseek-coder"]
+        description: "Source code setups, structural scripts, bug fixes, and development patterns.",
+        fallbackKeywords: ["coder", "code", "qwen"],
+        hintWords: [
+            "code", "function", "script", "bug", "debug", "error", "python", "javascript", "typescript", "java",
+            "rust", "golang", "sql", "api", "class", "compile", "regex", "refactor", "unit test", "npm", "git"
+        ]
     },
     {
         key: "reasoner",
-        description: "Heavyweight reasoning model engineered explicitly for multi-step deep analysis, logical systems, and complex mathematics.",
-        fallbackKeywords: ["deepseek-r1", "reasoning", "r1", "qwq"]
+        description: "Deep multi-step analysis framework engineering, logic systems, and math puzzles.",
+        fallbackKeywords: ["deepseek-r1", "reasoning", "r1"],
+        hintWords: [
+            "prove", "proof", "math", "equation", "calculate", "logic", "puzzle", "reason", "step by step",
+            "theorem", "probability", "derive", "optimize", "algorithm", "complexity"
+        ]
     },
     {
         key: "general",
-        description: "Standard model for mixed utility tasks, generating comprehensive essays, document synthesis, and general data formats.",
-        fallbackKeywords: ["llama3", "mistral", "qwen2.5:7b", "latest"]
+        description: "Document write-ups, mixed general analysis summaries, and system essays.",
+        fallbackKeywords: ["llama3", "mistral", "latest"],
+        hintWords: ["write", "essay", "summarize", "summary", "explain", "describe", "email", "article", "story", "report"]
     }
 ];
+export function normalizeUrl(url) {
+    const withScheme = /^https?:\/\//i.test(url) ? url : `http://${url}`;
+    return withScheme.replace(/\/+$/, "");
+}
+export const DEFAULT_OPENROUTER_URL = "https://openrouter.ai/api/v1";
+/**
+ * Model used for each tier when forwarding to OpenRouter.
+ * Override one with an env var, e.g. SMART_ROUTER_CODER_MODEL=qwen/qwen3-coder:free
+ */
+export const DEFAULT_OPENROUTER_MODELS = {
+    micro: "openrouter/free",
+    coder: "openrouter/free",
+    reasoner: "openrouter/free",
+    general: "openrouter/free"
+};
+export function openRouterModels(env = process.env) {
+    const out = { ...DEFAULT_OPENROUTER_MODELS };
+    for (const key of Object.keys(out)) {
+        const override = env[`SMART_ROUTER_${key.toUpperCase()}_MODEL`];
+        if (override)
+            out[key] = override;
+    }
+    return out;
+}
+export const DEFAULT_ANTHROPIC_URL = "https://api.anthropic.com/v1";
+/**
+ * Claude model for each tier when Claude Code is routed with its own login.
+ * Override one with an env var, e.g. SMART_ROUTER_CLAUDE_REASONER_MODEL=claude-fable-5-1
+ */
+export const DEFAULT_CLAUDE_MODELS = {
+    micro: "claude-haiku-4-5",
+    coder: "claude-sonnet-5-5",
+    reasoner: "claude-opus-5-5",
+    general: "claude-sonnet-5-5"
+};
+export function claudeModels(env = process.env) {
+    const out = { ...DEFAULT_CLAUDE_MODELS };
+    for (const key of Object.keys(out)) {
+        const override = env[`SMART_ROUTER_CLAUDE_${key.toUpperCase()}_MODEL`];
+        if (override)
+            out[key] = override;
+    }
+    return out;
+}

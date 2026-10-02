@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        node: [20, 22]
+    runs-on: ${{ matrix.os }}
+    env:
+      ONNXRUNTIME_NODE_INSTALL: skip
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - run: npm ci
+      - run: npm test
+
+      - name: Pack npm package
+        shell: bash
+        run: npm pack --pack-destination "$RUNNER_TEMP"
+
+      - name: npm install -g works
+        shell: bash
+        run: |
+          npm install -g "$RUNNER_TEMP"/laya-smart-router-*.tgz
+          smart-router --version
+          smart-router route -e keyword "write a python function"
+          npm uninstall -g laya-smart-router
+
+      - name: pipx install works (cmd)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          pip install pipx
+          pipx install ./python
+          set PATH=%USERPROFILE%\.local\bin;%PATH%
+          for %%f in ("%RUNNER_TEMP%\laya-smart-router-*.tgz") do set SMART_ROUTER_NPM_SPEC=%%f
+          smart-router route -e keyword "hello there"
+
+      - name: pipx install works (bash)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          pip install pipx
+          pipx install ./python
+          export PATH="$HOME/.local/bin:$PATH"
+          export SMART_ROUTER_NPM_SPEC=$(ls "$RUNNER_TEMP"/laya-smart-router-*.tgz)
+          smart-router route -e keyword "hello there"

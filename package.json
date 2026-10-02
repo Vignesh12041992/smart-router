@@ -1,17 +1,53 @@
 {
-  "name": "smart-router",
+  "name": "laya-smart-router",
   "version": "1.0.0",
-  "description": "Automated LLM task router using Laya System-1 decision model",
-  "main": "dist/index.js",
+  "description": "Lightweight LLM router and OpenAI/Anthropic-compatible proxy for Claude Code, Copilot and Devin (forwards to OpenRouter)",
+  "license": "MIT",
+  "homepage": "https://github.com/Vignesh12041992/smart-router#readme",
+  "bugs": {
+    "url": "https://github.com/Vignesh12041992/smart-router/issues"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Vignesh12041992/smart-router.git"
+  },
   "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "smart-router": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "public",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=20"
+  },
+  "keywords": [
+    "llm",
+    "router",
+    "openrouter",
+    "proxy",
+    "claude-code",
+    "copilot",
+    "openai",
+    "ollama",
+    "laya",
+    "cli"
+  ],
   "scripts": {
-    "build": "tsc",
-    "start": "tsc && node dist/index.js"
+    "build": "tsc && node -e \"require('fs').chmodSync('dist/cli.js', 0o755)\"",
+    "dev": "tsc --watch",
+    "typecheck": "tsc --noEmit",
+    "clean": "node -e \"require('fs').rmSync('dist', { recursive: true, force: true })\"",
+    "start": "npm run build && node dist/cli.js serve",
+    "test": "npm run build && node --test",
+    "prepublishOnly": "npm test"
   },
   "dependencies": {
-    "@receptron/laya": "^0.1.2",
-    "@aws-sdk/client-dynamodb": "^3.500.0",
-    "@aws-sdk/lib-dynamodb": "^3.500.0",
     "express": "^4.22.3"
   },
   "devDependencies": {
