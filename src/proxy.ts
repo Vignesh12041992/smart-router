@@ -128,7 +128,9 @@ export function mountProxy(app: Express, router: IntelligentRouter, opts: ProxyO
         model = claudeTiers[decision.tier];
         tier = decision.tier;
         // Haiku has a 200K context window. A long conversation stays on the general model instead.
-        if (/haiku/i.test(model) && JSON.stringify(body).length / 4 > HAIKU_MAX_INPUT_TOKENS) {
+        const size = /haiku/i.test(model) ? estimateTokens(body) : 0;
+        if (size > HAIKU_MAX_INPUT_TOKENS) {
+          console.error(`[smart-router] ~${size} tokens is too long for Haiku; using the general model`);
           model = claudeTiers.general;
           tier = "general";
         }
@@ -218,7 +220,8 @@ export function mountProxy(app: Express, router: IntelligentRouter, opts: ProxyO
   }
 }
 
-const HAIKU_MAX_INPUT_TOKENS = 150_000;
+/** Haiku's window is 200K, and input plus max_tokens must fit in it. */
+const HAIKU_MAX_INPUT_TOKENS = 130_000;
 const HAIKU_MAX_OUTPUT_TOKENS = 64_000;
 
 /**
@@ -256,18 +259,45 @@ export function fitToClaudeModel(body: any, model: string): any {
   return out;
 }
 
+/**
+ * Rough token count of a request: ~4 characters per token over the text. Images and PDFs count as
+ * ~1600 tokens each (their base64 is far longer than what they cost), and thinking signatures are skipped.
+ */
+export function estimateTokens(body: unknown): number {
+  let chars = 0;
+  const walk = (x: any): void => {
+    if (typeof x === "string") chars += x.length;
+    else if (Array.isArray(x)) x.forEach(walk);
+    else if (x && typeof x === "object") {
+      if ((x.type === "image" || x.type === "document") && x.source?.type === "base64") {
+        chars += 1600 * 4;
+        return;
+      }
+      for (const [k, v] of Object.entries(x)) if (k !== "signature" && !(x.type === "redacted_thinking" && k === "data")) walk(v);
+    }
+  };
+  walk(body);
+  return Math.ceil(chars / 4);
+}
+
+/** Claude Code adds context to the user's turn inside <system-reminder> tags. It is not part of the prompt. */
+const stripReminders = (s: string) => s.replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, "").trim();
+
 /** Text of the last user message. Handles plain strings and content-part arrays (OpenAI and Anthropic). */
 export function lastUserText(messages: any[]): string {
   for (let i = messages.length - 1; i >= 0; i--) {
     const m = messages[i];
     if (m?.role !== "user") continue;
-    if (typeof m.content === "string") return m.content;
-    if (Array.isArray(m.content)) {
+    if (typeof m.content === "string") {
+      const text = stripReminders(m.content);
+      if (text) return text;
+    } else if (Array.isArray(m.content)) {
       const text = m.content
         .filter((p: any) => p?.type === "text" && typeof p.text === "string")
-        .map((p: any) => p.text)
+        .map((p: any) => stripReminders(p.text))
+        .filter(Boolean)
         .join("\n");
-      if (text.trim()) return text; // Claude Code sends tool results as user turns; keep looking past those.
+      if (text) return text; // Claude Code sends tool results as user turns; keep looking past those.
     }
   }
   return "";

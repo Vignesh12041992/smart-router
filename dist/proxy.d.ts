@@ -41,5 +41,10 @@ export declare function mountProxy(app: Express, router: IntelligentRouter, opts
  * Sonnet and Opus accept what Claude Code sends, so other models are left as they are.
  */
 export declare function fitToClaudeModel(body: any, model: string): any;
+/**
+ * Rough token count of a request: ~4 characters per token over the text. Images and PDFs count as
+ * ~1600 tokens each (their base64 is far longer than what they cost), and thinking signatures are skipped.
+ */
+export declare function estimateTokens(body: unknown): number;
 /** Text of the last user message. Handles plain strings and content-part arrays (OpenAI and Anthropic). */
 export declare function lastUserText(messages: any[]): string;

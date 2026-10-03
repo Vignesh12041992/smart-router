@@ -2,7 +2,7 @@ export { IntelligentRouter, classifyWithKeywords, type Engine, type RouteDecisio
 export { ROUTING_TIERS, DEFAULT_MODELS } from "./config/registry.js";
 export { listOllamaModels, streamOllama } from "./services/ollama.js";
 export { createApp, startServer } from "./server.js";
-export { mountProxy, lastUserText, fitToClaudeModel, type ProxyOptions, type ClaudeProvider } from "./proxy.js";
+export { mountProxy, lastUserText, fitToClaudeModel, estimateTokens, type ProxyOptions, type ClaudeProvider } from "./proxy.js";
 export { openRouterModels, DEFAULT_OPENROUTER_MODELS, claudeModels, DEFAULT_CLAUDE_MODELS } from "./config/registry.js";
 export {
   ConversationMemory, LocalStore, OmniRouteStore, memoryFromEnv,

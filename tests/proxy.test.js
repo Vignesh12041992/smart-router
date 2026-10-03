@@ -224,3 +224,36 @@ test("fitToClaudeModel keeps a valid Haiku thinking budget and turns system mess
   assert.deepEqual(out.thinking, { type: "enabled", budget_tokens: 63999 });
   assert.deepEqual(out.messages, [{ role: "user", content: "a" }, { role: "user", content: "be brief" }]);
 });
+
+test("Claude Code's <system-reminder> context is not routed as part of the prompt", async () => {
+  const reminder = "<system-reminder>\nContext: debug the python function, refactor the typescript class, fix the bug, implement the api\n</system-reminder>";
+  assert.equal(lastUserText([{ role: "user", content: [{ type: "text", text: reminder }, { type: "text", text: "hey" }] }]), "hey");
+  assert.equal(lastUserText([{ role: "user", content: `${reminder}\nwhat is 1+1?` }]), "what is 1+1?");
+
+  const { base, upstream, close } = await setup(null, "anthropic");
+  try {
+    await post(`${base}/v1/messages`, {
+      model: "claude-opus-5-5", max_tokens: 128000,
+      messages: [{ role: "user", content: [{ type: "text", text: reminder }, { type: "text", text: "hey" }] }]
+    }, { "x-api-key": "sk-ant-user" });
+    assert.equal(upstream.calls[0].body.model, "c-haiku");
+  } finally {
+    await close();
+  }
+});
+
+test("pasted images and thinking signatures do not make a short chat look too long for Haiku", async () => {
+  const { estimateTokens } = await import("../dist/index.js");
+  const image = { type: "image", source: { type: "base64", media_type: "image/png", data: "A".repeat(2_000_000) } };
+  const thinking = { type: "thinking", thinking: "", signature: "S".repeat(500_000) };
+  const body = { messages: [{ role: "user", content: [image, { type: "text", text: "what is this?" }] }, { role: "assistant", content: [thinking, { type: "text", text: "a chart" }] }, { role: "user", content: "hey" }] };
+  assert.ok(estimateTokens(body) < 2000);
+
+  const { base, upstream, close } = await setup(null, "anthropic");
+  try {
+    await post(`${base}/v1/messages`, { model: "claude-opus-5-5", max_tokens: 128000, ...body }, { "x-api-key": "sk-ant-user" });
+    assert.equal(upstream.calls[0].body.model, "c-haiku");
+  } finally {
+    await close();
+  }
+});
