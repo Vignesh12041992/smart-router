@@ -177,3 +177,50 @@ test("Claude Code background Haiku calls and count_tokens", async () => {
     await close();
   }
 });
+
+test("an Opus-shaped Claude Code request routed to Haiku is adjusted to what Haiku accepts", async () => {
+  const { base, upstream, close } = await setup(null, "anthropic");
+  try {
+    // What Claude Code sends when set to Opus 5.5: 128K output, adaptive thinking, effort.
+    const res = await post(`${base}/v1/messages`, {
+      model: "claude-opus-5-5", max_tokens: 128000, stream: true,
+      thinking: { type: "adaptive" }, output_config: { effort: "xhigh" },
+      messages: [{ role: "user", content: "what is 1+1?" }]
+    }, { "x-api-key": "sk-ant-user" });
+    assert.equal(res.status, 200);
+    const sent = upstream.calls[0].body;
+    assert.equal(sent.model, "c-haiku");
+    assert.equal(sent.max_tokens, 64000);
+    assert.equal(sent.thinking, undefined);
+    assert.equal(sent.output_config, undefined);
+
+    // Sonnet and Opus take the request as is.
+    await post(`${base}/v1/messages`, {
+      model: "claude-opus-5-5", max_tokens: 128000, thinking: { type: "adaptive" }, output_config: { effort: "xhigh" },
+      messages: [{ role: "user", content: "prove this theorem step by step" }]
+    }, { "x-api-key": "sk-ant-user" });
+    assert.equal(upstream.calls[1].body.model, "c-opus");
+    assert.equal(upstream.calls[1].body.max_tokens, 128000);
+    assert.deepEqual(upstream.calls[1].body.output_config, { effort: "xhigh" });
+
+    // A conversation too long for Haiku's 200K window goes to the general model instead.
+    await post(`${base}/v1/messages`, {
+      model: "claude-opus-5-5", max_tokens: 128000,
+      messages: [{ role: "user", content: "x".repeat(700_000) }, { role: "assistant", content: "ok" }, { role: "user", content: "thanks" }]
+    }, { "x-api-key": "sk-ant-user" });
+    assert.equal(upstream.calls[2].body.model, "c-sonnet");
+  } finally {
+    await close();
+  }
+});
+
+test("fitToClaudeModel keeps a valid Haiku thinking budget and turns system messages into user turns", async () => {
+  const { fitToClaudeModel } = await import("../dist/index.js");
+  const out = fitToClaudeModel({
+    max_tokens: 100000, thinking: { type: "enabled", budget_tokens: 90000 },
+    messages: [{ role: "user", content: "a" }, { role: "system", content: "be brief" }, { role: "system", content: [] }]
+  }, "claude-haiku-4-5");
+  assert.equal(out.max_tokens, 64000);
+  assert.deepEqual(out.thinking, { type: "enabled", budget_tokens: 63999 });
+  assert.deepEqual(out.messages, [{ role: "user", content: "a" }, { role: "user", content: "be brief" }]);
+});

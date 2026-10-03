@@ -67,6 +67,9 @@ Change one with `SMART_ROUTER_CLAUDE_<TIER>_MODEL`, for example
 - The model is picked from your latest typed message, so it stays the same while Claude Code works
   through that task's tool calls.
 - Claude Code's own Haiku background calls (titles, summaries) are left alone.
+- When a prompt is sent to Haiku, settings Haiku does not accept are adjusted: output is capped at
+  64K tokens, and adaptive thinking and `effort` are left out. A conversation too long for Haiku's
+  200K window goes to the general model instead.
 
 ### Other tools (OpenAI format): need an OpenRouter key
 
