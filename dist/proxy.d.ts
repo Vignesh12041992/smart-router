@@ -34,5 +34,12 @@ export interface ProxyOptions {
  * Each request is routed to a tier, then forwarded to OpenRouter. Streaming is passed straight through.
  */
 export declare function mountProxy(app: Express, router: IntelligentRouter, opts?: ProxyOptions): void;
+/**
+ * Claude Code shapes its request for the model it asked for (often Opus). When smart-router sends it to
+ * Haiku instead, settings Haiku does not accept are adjusted, or the request fails with a 400:
+ *   max_tokens above 64K, adaptive thinking, output_config.effort, and system messages inside "messages".
+ * Sonnet and Opus accept what Claude Code sends, so other models are left as they are.
+ */
+export declare function fitToClaudeModel(body: any, model: string): any;
 /** Text of the last user message. Handles plain strings and content-part arrays (OpenAI and Anthropic). */
 export declare function lastUserText(messages: any[]): string;

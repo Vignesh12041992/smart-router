@@ -127,6 +127,11 @@ export function mountProxy(app: Express, router: IntelligentRouter, opts: ProxyO
         const decision = await router.processRequest(prompt);
         model = claudeTiers[decision.tier];
         tier = decision.tier;
+        // Haiku has a 200K context window. A long conversation stays on the general model instead.
+        if (/haiku/i.test(model) && JSON.stringify(body).length / 4 > HAIKU_MAX_INPUT_TOKENS) {
+          model = claudeTiers.general;
+          tier = "general";
+        }
       }
     }
     res.setHeader("X-Smart-Router-Tier", tier);
@@ -141,7 +146,8 @@ export function mountProxy(app: Express, router: IntelligentRouter, opts: ProxyO
     const session = sessionOf(req, body);
     // Haiku background jobs (tier "manual" here) are not part of the conversation.
     const outBody = path === "messages" && tier !== "manual" ? await withMemory(res, body, session) : body;
-    await forward(res, "anthropic", `${anthropicUrl}/${path}${queryString(req)}`, headers, { ...outBody, model },
+    const fitted = tier === "manual" ? { ...outBody, model } : fitToClaudeModel({ ...outBody, model }, model);
+    await forward(res, "anthropic", `${anthropicUrl}/${path}${queryString(req)}`, headers, fitted,
       path === "messages" ? saveTurn(session, prompt, tier, model, claudeSummarizer(headers)) : undefined);
   };
 
@@ -210,6 +216,44 @@ export function mountProxy(app: Express, router: IntelligentRouter, opts: ProxyO
   } else {
     app.post("/v1/messages", wrap(handle("anthropic"), "anthropic"));
   }
+}
+
+const HAIKU_MAX_INPUT_TOKENS = 150_000;
+const HAIKU_MAX_OUTPUT_TOKENS = 64_000;
+
+/**
+ * Claude Code shapes its request for the model it asked for (often Opus). When smart-router sends it to
+ * Haiku instead, settings Haiku does not accept are adjusted, or the request fails with a 400:
+ *   max_tokens above 64K, adaptive thinking, output_config.effort, and system messages inside "messages".
+ * Sonnet and Opus accept what Claude Code sends, so other models are left as they are.
+ */
+export function fitToClaudeModel(body: any, model: string): any {
+  if (!/haiku/i.test(model)) return body;
+  const out = { ...body };
+  if (typeof out.max_tokens === "number") out.max_tokens = Math.min(out.max_tokens, HAIKU_MAX_OUTPUT_TOKENS);
+
+  // Haiku only takes {type: "enabled", budget_tokens}, with 1024 <= budget < max_tokens. Anything else: no thinking.
+  if (out.thinking?.type === "enabled" && typeof out.max_tokens === "number") {
+    const budget = Math.min(out.thinking.budget_tokens ?? 0, out.max_tokens - 1);
+    out.thinking = budget >= 1024 ? { ...out.thinking, budget_tokens: budget } : undefined;
+  } else if (out.thinking) {
+    out.thinking = undefined;
+  }
+  if (!out.thinking) delete out.thinking;
+
+  if (out.output_config && "effort" in out.output_config) {
+    const { effort: _effort, ...rest } = out.output_config;
+    if (Object.keys(rest).length) out.output_config = rest;
+    else delete out.output_config;
+  }
+
+  // Mid-conversation system messages are newer than Haiku: keep their text as a user turn, drop effort-only ones.
+  if (Array.isArray(out.messages) && out.messages.some((m: any) => m?.role === "system")) {
+    out.messages = out.messages
+      .filter((m: any) => m?.role !== "system" || (Array.isArray(m.content) ? m.content.length : m.content))
+      .map((m: any) => (m?.role === "system" ? { role: "user", content: m.content } : m));
+  }
+  return out;
 }
 
 /** Text of the last user message. Handles plain strings and content-part arrays (OpenAI and Anthropic). */
