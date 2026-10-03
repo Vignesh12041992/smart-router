@@ -1,4 +1,3 @@
-import { createHash } from "crypto";
 import { normalizeUrl } from "../config/registry.js";
 
 export interface Turn {
@@ -8,52 +7,156 @@ export interface Turn {
   model: string;
 }
 
-/**
- * Remembers the turns of each conversation (session), so when smart-router switches to a
- * different model mid-conversation, the new model is handed the earlier turns.
- */
-export interface ConversationMemory {
-  readonly kind: string;
-  /** Earlier turns of a session, oldest first. Empty when there are none. */
-  recall(sessionId: string): Promise<Turn[]>;
-  remember(sessionId: string, turn: Turn): Promise<void>;
+/** What is kept per conversation: a running summary of older turns, plus the recent turns word for word. */
+export interface SessionState {
+  summary: string;
+  turns: Turn[];
+  /** Set once the client relies on memory (sends new prompts without the earlier turns). */
+  usesMemory?: boolean;
 }
 
-const RECALL_TURNS = 10;
-const CLIP_CHARS = 8000;
+/** Where session state is kept. */
+export interface MemoryStore {
+  readonly kind: string;
+  load(sessionId: string): Promise<SessionState | undefined>;
+  save(sessionId: string, state: SessionState): Promise<void>;
+}
 
-const clip = (s: string) => (s.length > CLIP_CHARS ? s.slice(0, CLIP_CHARS) + "..." : s);
+/** Calls a small, cheap model. Built per request so it reuses that request's own login or key. */
+export type Summarizer = (system: string, user: string) => Promise<string>;
+
+/** What a request is handed: the summary of older turns and the recent turns. */
+export interface Recalled {
+  summary: string;
+  turns: Turn[];
+}
+
+const MAX_TURN_CHARS = 8000;
+const clip = (s: string, n = MAX_TURN_CHARS) => (s.length > n ? s.slice(0, n) + "..." : s);
+const turnChars = (t: Turn) => t.prompt.length + t.reply.length;
 
 /**
- * Built-in memory, kept inside the smart-router process. On by default, nothing to set up.
- * Old sessions are dropped after `idleMs` without activity, and the oldest are dropped past `maxSessions`.
+ * Remembers each conversation, so when smart-router switches models mid-conversation the new model
+ * is handed the context. Short conversations are handed over word for word. Once they grow past the
+ * token budget, older turns are folded into a running summary written by the cheap micro-tier model,
+ * in the background, after the reply has been sent.
  */
-export class LocalMemory implements ConversationMemory {
-  readonly kind = "local";
-  private sessions = new Map<string, { turns: Turn[]; seen: number }>();
+export class ConversationMemory {
+  /** ~4 characters per token. 70% of the budget for recent turns, the rest for the summary. */
+  private recentChars: number;
+  private summaryWords: number;
+  private queues = new Map<string, Promise<unknown>>();
 
-  constructor(private opts: { maxTurns?: number; maxSessions?: number; idleMs?: number } = {}) {}
-
-  async recall(sessionId: string): Promise<Turn[]> {
-    const s = this.sessions.get(sessionId);
-    if (!s) return [];
-    if (Date.now() - s.seen > (this.opts.idleMs ?? 6 * 3600_000)) {
-      this.sessions.delete(sessionId);
-      return [];
-    }
-    return s.turns.slice(-RECALL_TURNS);
+  constructor(readonly store: MemoryStore, opts: { tokens?: number } = {}) {
+    const tokens = opts.tokens ?? 2000;
+    this.recentChars = Math.round(tokens * 4 * 0.7);
+    this.summaryWords = Math.max(50, Math.round(tokens * 0.3 * 0.75));
   }
 
-  async remember(sessionId: string, t: Turn): Promise<void> {
-    const turn = { ...t, prompt: clip(t.prompt), reply: clip(t.reply) };
-    const s = this.sessions.get(sessionId) ?? { turns: [], seen: 0 };
-    // A tool loop resends the same prompt many times; keep one entry for it.
-    if (s.turns.at(-1)?.prompt === turn.prompt) s.turns[s.turns.length - 1] = turn;
-    else s.turns.push(turn);
-    if (s.turns.length > (this.opts.maxTurns ?? 50)) s.turns.shift();
-    s.seen = Date.now();
+  get kind() {
+    return this.store.kind;
+  }
+
+  /** Runs one change to a session at a time, so saves and summaries never overwrite each other. */
+  private queued<T>(sessionId: string, fn: () => Promise<T>): Promise<T> {
+    const run = (this.queues.get(sessionId) ?? Promise.resolve()).then(fn, fn);
+    const tail = run.catch(() => {});
+    this.queues.set(sessionId, tail);
+    void tail.then(() => { if (this.queues.get(sessionId) === tail) this.queues.delete(sessionId); });
+    return run;
+  }
+
+  /** The context to hand a request that carries no history of its own, kept within the token budget. */
+  async recall(sessionId: string): Promise<Recalled> {
+    let state: SessionState | undefined;
+    try {
+      state = await this.store.load(sessionId);
+    } catch {
+      return { summary: "", turns: [] };
+    }
+    if (!state || (!state.summary && !state.turns.length)) return { summary: "", turns: [] };
+
+    // This client continues a conversation without resending it: from now on, keep it summarized.
+    if (!state.usesMemory) {
+      void this.queued(sessionId, async () => {
+        const s = await this.store.load(sessionId);
+        if (s && !s.usesMemory) await this.store.save(sessionId, { ...s, usesMemory: true });
+      }).catch(() => {});
+    }
+
+    // Newest turns first, until the budget is used. The newest one always goes in, cut to fit if needed.
+    const turns: Turn[] = [];
+    let used = 0;
+    for (let i = state.turns.length - 1; i >= 0; i--) {
+      const t = state.turns[i];
+      if (turns.length && used + turnChars(t) > this.recentChars) break;
+      const half = Math.floor(this.recentChars / 2);
+      turns.unshift(turns.length ? t : { ...t, prompt: clip(t.prompt, half), reply: clip(t.reply, half) });
+      used += turnChars(t);
+    }
+    return { summary: state.summary, turns };
+  }
+
+  /** Saves a finished turn. If the session has grown past the budget, folds older turns into the summary. */
+  remember(sessionId: string, turn: Turn, summarize?: Summarizer): Promise<void> {
+    return this.queued(sessionId, async () => {
+      const state = (await this.store.load(sessionId)) ?? { summary: "", turns: [] };
+      const t = { ...turn, prompt: clip(turn.prompt), reply: clip(turn.reply) };
+      // A tool loop resends the same prompt many times; keep one entry for it.
+      if (state.turns.at(-1)?.prompt === t.prompt) state.turns[state.turns.length - 1] = t;
+      else state.turns.push(t);
+      state.turns = state.turns.slice(-50);
+      await this.store.save(sessionId, state);
+
+      // Only clients that rely on memory need a summary. Claude Code and the like resend everything.
+      if (!state.usesMemory || !summarize) return;
+      let total = state.turns.reduce((n, x) => n + turnChars(x), 0);
+      let fold = 0;
+      while (total > this.recentChars && state.turns.length - fold > 2) total -= turnChars(state.turns[fold++]);
+      if (!fold) return;
+
+      const summary = (await summarize(this.instructions(), this.summaryInput(state.summary, state.turns.slice(0, fold)))).trim();
+      if (!summary) return;
+      await this.store.save(sessionId, { ...state, summary, turns: state.turns.slice(fold) });
+    }).catch(() => { /* memory is best effort; recall still keeps within the budget */ });
+  }
+
+  private instructions(): string {
+    return [
+      "You keep a running summary of a conversation between a user and an AI assistant.",
+      "Merge the new turns into the existing summary. Keep what is needed to continue the work:",
+      "the user's goals, decisions made, facts and numbers, names, file names, code identifiers,",
+      "constraints and preferences, and open questions. Drop greetings and filler.",
+      `Write at most ${this.summaryWords} words, as short bullet points. Reply with the summary only.`
+    ].join(" ");
+  }
+
+  private summaryInput(previous: string, turns: Turn[]): string {
+    const lines = turns.map(t => `User: ${t.prompt}\nAssistant (${t.model}): ${t.reply}`).join("\n\n");
+    return `Existing summary:\n${previous || "(none yet)"}\n\nNew turns:\n${lines}`;
+  }
+}
+
+/** Built-in store, inside the smart-router process. Idle sessions are dropped; so are the oldest past maxSessions. */
+export class LocalStore implements MemoryStore {
+  readonly kind = "local";
+  private sessions = new Map<string, { state: SessionState; seen: number }>();
+
+  constructor(private opts: { maxSessions?: number; idleMs?: number } = {}) {}
+
+  async load(sessionId: string): Promise<SessionState | undefined> {
+    const s = this.sessions.get(sessionId);
+    if (!s) return undefined;
+    if (Date.now() - s.seen > (this.opts.idleMs ?? 6 * 3600_000)) {
+      this.sessions.delete(sessionId);
+      return undefined;
+    }
+    return structuredClone(s.state);
+  }
+
+  async save(sessionId: string, state: SessionState): Promise<void> {
     this.sessions.delete(sessionId); // re-insert so the Map stays ordered by last use
-    this.sessions.set(sessionId, s);
+    this.sessions.set(sessionId, { state: structuredClone(state), seen: Date.now() });
     const max = this.opts.maxSessions ?? 500;
     while (this.sessions.size > max) this.sessions.delete(this.sessions.keys().next().value!);
   }
@@ -61,12 +164,12 @@ export class LocalMemory implements ConversationMemory {
 
 /**
  * Optional: keep memory in an OmniRoute server (https://github.com/diegosouzapw/OmniRoute) instead,
- * so it is shared between several smart-router processes. Failures never block routing.
+ * so several smart-router processes share it. Each session is one entry.
  *
  * OMNIROUTE_URL      e.g. http://localhost:20128
  * OMNIROUTE_API_KEY  only needed when OmniRoute has auth enabled (needs the manage scope)
  */
-export class OmniRouteMemory implements ConversationMemory {
+export class OmniRouteStore implements MemoryStore {
   readonly kind = "omniroute";
 
   constructor(private baseUrl: string, private apiKey?: string) {}
@@ -77,67 +180,58 @@ export class OmniRouteMemory implements ConversationMemory {
     return h;
   }
 
-  async recall(sessionId: string): Promise<Turn[]> {
-    try {
-      const url = `${this.baseUrl}/api/memory?sessionId=${encodeURIComponent(sessionId)}&limit=${RECALL_TURNS}`;
-      const res = await fetch(url, { headers: this.headers(), signal: AbortSignal.timeout(2000) });
-      if (!res.ok) return [];
-      const { data = [] } = (await res.json()) as { data?: any[] };
-      // OmniRoute lists newest first.
-      return data.reverse().map(m => ({
-        prompt: m.metadata?.prompt ?? "",
-        reply: m.metadata?.reply ?? String(m.content ?? ""),
-        tier: m.metadata?.tier ?? "",
-        model: m.metadata?.model ?? ""
-      }));
-    } catch {
-      return [];
-    }
+  async load(sessionId: string): Promise<SessionState | undefined> {
+    const url = `${this.baseUrl}/api/memory?sessionId=${encodeURIComponent(sessionId)}&limit=1`;
+    const res = await fetch(url, { headers: this.headers(), signal: AbortSignal.timeout(2000) });
+    if (!res.ok) return undefined;
+    const { data = [] } = (await res.json()) as { data?: any[] };
+    const entry = data.find(m => m.key === `smart-router:${sessionId}`) ?? data[0];
+    return entry ? (JSON.parse(entry.content) as SessionState) : undefined;
   }
 
-  async remember(sessionId: string, t: Turn): Promise<void> {
-    const prompt = clip(t.prompt);
-    const reply = clip(t.reply);
-    try {
-      await fetch(`${this.baseUrl}/api/memory`, {
-        method: "POST",
-        headers: this.headers(),
-        signal: AbortSignal.timeout(2000),
-        body: JSON.stringify({
-          // OmniRoute upserts on "key", so a tool loop that repeats a prompt updates one entry.
-          key: `${sessionId}:${createHash("sha1").update(t.prompt).digest("hex").slice(0, 12)}`,
-          type: "episodic",
-          sessionId,
-          content: `User: ${prompt}\nAssistant: ${reply}`,
-          metadata: { tier: t.tier, model: t.model, prompt, reply }
-        })
-      });
-    } catch {
-      /* memory is best effort */
-    }
+  async save(sessionId: string, state: SessionState): Promise<void> {
+    await fetch(`${this.baseUrl}/api/memory`, {
+      method: "POST",
+      headers: this.headers(),
+      signal: AbortSignal.timeout(2000),
+      // OmniRoute upserts on "key", so each session stays one entry.
+      body: JSON.stringify({ key: `smart-router:${sessionId}`, type: "episodic", sessionId, content: JSON.stringify(state) })
+    });
   }
 }
 
 /**
  * Memory is on by default and lives inside smart-router.
- * SMART_ROUTER_MEMORY=off turns it off. OMNIROUTE_URL moves it to an OmniRoute server.
+ * SMART_ROUTER_MEMORY=off         turns it off
+ * SMART_ROUTER_MEMORY_TOKENS=2000 most tokens of earlier context handed to a request
+ * OMNIROUTE_URL                   optional: keep it in an OmniRoute server
  */
 export function memoryFromEnv(env: NodeJS.ProcessEnv = process.env): ConversationMemory | undefined {
   if (/^(off|false|0|no)$/i.test(env.SMART_ROUTER_MEMORY ?? "")) return undefined;
-  if (env.OMNIROUTE_URL) return new OmniRouteMemory(normalizeUrl(env.OMNIROUTE_URL), env.OMNIROUTE_API_KEY);
-  return new LocalMemory();
+  const store = env.OMNIROUTE_URL ? new OmniRouteStore(normalizeUrl(env.OMNIROUTE_URL), env.OMNIROUTE_API_KEY) : new LocalStore();
+  const tokens = Number(env.SMART_ROUTER_MEMORY_TOKENS);
+  return new ConversationMemory(store, { tokens: tokens > 0 ? tokens : undefined });
 }
 
-/** Earlier turns as user/assistant messages. Works for both OpenAI and Anthropic formats. */
-export function historyMessages(turns: Turn[]): { role: "user" | "assistant"; content: string }[] {
-  return turns
-    .filter(t => t.prompt && t.reply)
-    .flatMap(t => [{ role: "user" as const, content: t.prompt }, { role: "assistant" as const, content: t.reply }]);
+/** Earlier context as user/assistant messages. Works for both OpenAI and Anthropic formats. */
+export function historyMessages({ summary, turns }: Recalled): { role: "user" | "assistant"; content: string }[] {
+  const out: { role: "user" | "assistant"; content: string }[] = [];
+  if (summary) {
+    out.push({ role: "user", content: `Summary of our conversation so far:\n${summary}` });
+    out.push({ role: "assistant", content: "Understood. I have that context." });
+  }
+  for (const t of turns) {
+    if (!t.prompt || !t.reply) continue;
+    out.push({ role: "user", content: t.prompt }, { role: "assistant", content: t.reply });
+  }
+  return out;
 }
 
-/** Earlier turns as plain text, for single-prompt APIs like Ollama's /api/generate. */
-export function historyText(turns: Turn[]): string {
-  return turns.filter(t => t.prompt && t.reply).map(t => `User: ${t.prompt}\nAssistant: ${t.reply}`).join("\n\n");
+/** Earlier context as plain text, for single-prompt APIs like Ollama's /api/generate. */
+export function historyText({ summary, turns }: Recalled): string {
+  const parts = summary ? [`Summary of earlier conversation:\n${summary}`] : [];
+  for (const t of turns) if (t.prompt && t.reply) parts.push(`User: ${t.prompt}\nAssistant: ${t.reply}`);
+  return parts.join("\n\n");
 }
 
 /** Pulls the assistant text out of a raw upstream response: SSE stream or plain JSON, OpenAI or Anthropic. */

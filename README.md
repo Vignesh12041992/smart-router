@@ -100,9 +100,22 @@ A session is one conversation. Smart Router takes it from, in order: the `X-Smar
 header, Claude Code's per-conversation id, the OpenAI `user` field, or else the client's address.
 Send your own `X-Smart-Router-Session` to keep separate conversations apart.
 
-Memory stays inside the Smart Router process. Sessions idle for 6 hours are forgotten, and it
-keeps the last 10 turns per request. Response headers `X-Smart-Router-Session` and
-`X-Smart-Router-Memory` (number of turns added) show what happened.
+**It stays small: a smart summary instead of the whole conversation.** Each request gets at most
+`SMART_ROUTER_MEMORY_TOKENS` (default 2000) tokens of earlier context:
+
+- Short conversations go over word for word.
+- Once a conversation grows past the budget, older turns are folded into a running summary.
+  It keeps goals, decisions, facts, names, file names and open questions, and drops filler.
+  The recent turns stay word for word.
+- The summary is written by the cheap micro-tier model (Haiku for Claude Code, `SMART_ROUTER_MICRO_MODEL`
+  on OpenRouter, the same Ollama model on the dashboard), with the login or key the request already uses.
+- It runs in the background after the answer is sent, so it never slows a reply.
+- Only conversations that rely on memory are summarized. Tools that resend everything never trigger it.
+- If a summary call fails, the oldest turns are simply left out, so the budget still holds.
+
+Memory stays inside the Smart Router process; sessions idle for 6 hours are forgotten.
+Response headers `X-Smart-Router-Session` and `X-Smart-Router-Memory` (turns added, plus `+summary`)
+show what happened.
 
 - Turn it off: `SMART_ROUTER_MEMORY=off`.
 - Optional: share memory between several Smart Router processes through an
@@ -286,6 +299,7 @@ smart-router download
 |                                    | `LAYA_CACHE`      | `~/.cache/receptron-laya`|
 |                                    | `HF_TOKEN`        | Hugging Face token, if needed |
 |                                    | `SMART_ROUTER_MEMORY` | on (built in). `off` turns memory off |
+|                                    | `SMART_ROUTER_MEMORY_TOKENS` | `2000`. Most tokens of earlier context per request |
 |                                    | `OMNIROUTE_URL`   | Optional. Keep memory in an OmniRoute server |
 
 Settings for the Python wrapper:

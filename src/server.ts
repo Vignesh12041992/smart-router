@@ -45,7 +45,13 @@ export function createApp(router: IntelligentRouter, proxy: ProxyOptions = {}) {
         reply += token;
         res.write(`data: ${JSON.stringify({ token })}\n\n`);
       });
-      if (memory && reply) void memory.remember(session, { prompt: String(prompt), reply, tier: String(tier ?? "ollama"), model: String(model) });
+      // Summaries of long dashboard chats are written locally by the same Ollama model.
+      const summarize = async (system: string, user: string) => {
+        let out = "";
+        await streamOllama(router.ollamaUrl, String(model), `${system}\n\n${user}`, t => { out += t; });
+        return out;
+      };
+      if (memory && reply) void memory.remember(session, { prompt: String(prompt), reply, tier: String(tier ?? "ollama"), model: String(model) }, summarize);
     } catch (err: any) {
       res.write(`data: ${JSON.stringify({ error: `Could not reach Ollama at ${router.ollamaUrl}: ${err.message}` })}\n\n`);
     }

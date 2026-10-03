@@ -4,4 +4,7 @@ export { listOllamaModels, streamOllama } from "./services/ollama.js";
 export { createApp, startServer } from "./server.js";
 export { mountProxy, lastUserText, type ProxyOptions, type ClaudeProvider } from "./proxy.js";
 export { openRouterModels, DEFAULT_OPENROUTER_MODELS, claudeModels, DEFAULT_CLAUDE_MODELS } from "./config/registry.js";
-export { LocalMemory, OmniRouteMemory, memoryFromEnv, type ConversationMemory, type Turn } from "./services/memory.js";
+export {
+  ConversationMemory, LocalStore, OmniRouteStore, memoryFromEnv,
+  type MemoryStore, type SessionState, type Summarizer, type Turn
+} from "./services/memory.js";

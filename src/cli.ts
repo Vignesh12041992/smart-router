@@ -43,6 +43,7 @@ Environment:
   SMART_ROUTER_<TIER>_MODEL         OpenRouter model per tier
   SMART_ROUTER_CLAUDE_PROVIDER      Set to "openrouter" to send Claude Code to OpenRouter instead
   SMART_ROUTER_MEMORY               Conversation memory across model switches (default: on). "off" turns it off
+  SMART_ROUTER_MEMORY_TOKENS        Most tokens of earlier context per request (default: 2000); older turns are summarized
       --host <address>              Host for "serve" (default: 127.0.0.1)
       --json                        Print "route" output as JSON
   -q, --quiet                       Hide progress messages
