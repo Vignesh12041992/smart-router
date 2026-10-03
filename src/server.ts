@@ -5,13 +5,15 @@ import { fileURLToPath } from "url";
 import type { IntelligentRouter } from "./services/router.js";
 import { streamOllama } from "./services/ollama.js";
 import { mountProxy, type ProxyOptions } from "./proxy.js";
+import { OmniRouteMemory, contextBlock } from "./services/memory.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export function createApp(router: IntelligentRouter, proxy: ProxyOptions = {}) {
   const app = express();
   app.use(express.json({ limit: "50mb" })); // coding tools send large contexts
-  mountProxy(app, router, proxy);
+  const memory = proxy.memory ?? OmniRouteMemory.fromEnv();
+  mountProxy(app, router, { ...proxy, memory });
   app.use(express.static(path.join(__dirname, "../public")));
 
   app.get("/api/status", (_req, res) => {
@@ -27,14 +29,21 @@ export function createApp(router: IntelligentRouter, proxy: ProxyOptions = {}) {
   });
 
   app.get("/api/stream", async (req, res) => {
-    const { model, prompt } = req.query;
+    const { model, prompt, tier } = req.query;
+    const session = String(req.query.session ?? "dashboard");
     res.setHeader("Content-Type", "text/event-stream");
     res.setHeader("Cache-Control", "no-cache");
 
     try {
-      await streamOllama(router.ollamaUrl, String(model), String(prompt), token => {
+      // Ollama's /api/generate takes one prompt, so earlier turns (possibly answered by another model) go in as text.
+      const history = memory ? await memory.recall(session) : "";
+      const full = history ? `${contextBlock(history)}\n\nUser: ${prompt}\nAssistant:` : String(prompt);
+      let reply = "";
+      await streamOllama(router.ollamaUrl, String(model), full, token => {
+        reply += token;
         res.write(`data: ${JSON.stringify({ token })}\n\n`);
       });
+      if (memory && reply) void memory.remember(session, { prompt: String(prompt), reply, tier: String(tier ?? "ollama"), model: String(model) });
     } catch (err: any) {
       res.write(`data: ${JSON.stringify({ error: `Could not reach Ollama at ${router.ollamaUrl}: ${err.message}` })}\n\n`);
     }

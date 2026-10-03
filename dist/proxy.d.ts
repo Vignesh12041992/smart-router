@@ -1,6 +1,7 @@
 import type { Express } from "express";
 import { type TierKey } from "./config/registry.js";
 import type { IntelligentRouter } from "./services/router.js";
+import { OmniRouteMemory } from "./services/memory.js";
 /**
  * Where Claude Code requests (/v1/messages) go:
  *   "anthropic"  - straight to Anthropic with the tool's OWN login. No extra key. (default)
@@ -19,6 +20,8 @@ export interface ProxyOptions {
     apiKey?: string;
     /** Model for each tier. */
     models?: Record<TierKey, string>;
+    /** Conversation memory (OmniRoute). Defaults to the one configured by OMNIROUTE_URL, if any. */
+    memory?: OmniRouteMemory;
 }
 /**
  * Adds the endpoints coding tools talk to:
