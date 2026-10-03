@@ -85,6 +85,43 @@ They work only where the tool lets you set a custom OpenAI-compatible endpoint, 
 Endpoints: `POST /v1/messages`, `POST /v1/messages/count_tokens`, `POST /v1/chat/completions`,
 `GET /v1/models`. Response headers `X-Smart-Router-Tier` and `X-Smart-Router-Model` show each decision.
 
+### Memory: the context follows the conversation when the model changes
+
+Smart Router may pick a different model for each prompt. Memory makes that switch seamless.
+It is **on by default and needs no setup**: no extra server, URL or key.
+
+- After each answer, Smart Router saves the prompt and reply under the conversation's session.
+- When a request arrives without earlier turns, Smart Router adds them back as normal
+  user/assistant messages. The new model sees the whole conversation, whichever model answered before.
+- Tools that resend the full conversation each time (Claude Code, Copilot, most chat UIs) already
+  carry the context, so nothing is added to them.
+
+A session is one conversation. Smart Router takes it from, in order: the `X-Smart-Router-Session`
+header, Claude Code's per-conversation id, the OpenAI `user` field, or else the client's address.
+Send your own `X-Smart-Router-Session` to keep separate conversations apart.
+
+**It stays small: a smart summary instead of the whole conversation.** Each request gets at most
+`SMART_ROUTER_MEMORY_TOKENS` (default 2000) tokens of earlier context:
+
+- Short conversations go over word for word.
+- Once a conversation grows past the budget, older turns are folded into a running summary.
+  It keeps goals, decisions, facts, names, file names and open questions, and drops filler.
+  The recent turns stay word for word.
+- The summary is written by the cheap micro-tier model (Haiku for Claude Code, `SMART_ROUTER_MICRO_MODEL`
+  on OpenRouter, the same Ollama model on the dashboard), with the login or key the request already uses.
+- It runs in the background after the answer is sent, so it never slows a reply.
+- Only conversations that rely on memory are summarized. Tools that resend everything never trigger it.
+- If a summary call fails, the oldest turns are simply left out, so the budget still holds.
+
+Memory stays inside the Smart Router process; sessions idle for 6 hours are forgotten.
+Response headers `X-Smart-Router-Session` and `X-Smart-Router-Memory` (turns added, plus `+summary`)
+show what happened.
+
+- Turn it off: `SMART_ROUTER_MEMORY=off`.
+- Optional: share memory between several Smart Router processes through an
+  [OmniRoute](https://github.com/diegosouzapw/OmniRoute) server with `OMNIROUTE_URL`
+  (and `OMNIROUTE_API_KEY` if it has auth on).
+
 The default engine is the offline keyword engine, so nothing large is downloaded.
 The Laya AI engine is optional: `smart-router download` installs it (~2 GB) into `~/.smart-router`.
 
@@ -261,6 +298,9 @@ smart-router download
 | `-q, --quiet`                      |                   | off                      |
 |                                    | `LAYA_CACHE`      | `~/.cache/receptron-laya`|
 |                                    | `HF_TOKEN`        | Hugging Face token, if needed |
+|                                    | `SMART_ROUTER_MEMORY` | on (built in). `off` turns memory off |
+|                                    | `SMART_ROUTER_MEMORY_TOKENS` | `2000`. Most tokens of earlier context per request |
+|                                    | `OMNIROUTE_URL`   | Optional. Keep memory in an OmniRoute server |
 
 Settings for the Python wrapper:
 
@@ -283,7 +323,7 @@ The same server has a small API:
 
 | Method | Path                                  | Returns                                 |
 |--------|---------------------------------------|-----------------------------------------|
-| `GET`  | `/api/status`                         | Engine, Ollama status, model list       |
+| `GET`  | `/api/status`                         | Engine, Ollama status, model list, memory |
 | `POST` | `/api/route` with `{"prompt": "..."}` | The routing decision (same as `--json`) |
 | `GET`  | `/api/stream?model=...&prompt=...`    | The answer as Server-Sent Events        |
 

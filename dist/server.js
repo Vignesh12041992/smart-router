@@ -3,14 +3,16 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { streamOllama } from "./services/ollama.js";
 import { mountProxy } from "./proxy.js";
+import { memoryFromEnv, historyText } from "./services/memory.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export function createApp(router, proxy = {}) {
     const app = express();
     app.use(express.json({ limit: "50mb" })); // coding tools send large contexts
-    mountProxy(app, router, proxy);
+    const memory = proxy.memory === undefined ? memoryFromEnv() : proxy.memory || undefined;
+    mountProxy(app, router, { ...proxy, memory: memory ?? false });
     app.use(express.static(path.join(__dirname, "../public")));
     app.get("/api/status", (_req, res) => {
-        res.json({ engine: router.activeEngine, ollamaOnline: router.ollamaOnline, models: router.ollamaModels });
+        res.json({ engine: router.activeEngine, ollamaOnline: router.ollamaOnline, models: router.ollamaModels, memory: memory?.kind ?? "off" });
     });
     app.post("/api/route", async (req, res) => {
         try {
@@ -21,13 +23,29 @@ export function createApp(router, proxy = {}) {
         }
     });
     app.get("/api/stream", async (req, res) => {
-        const { model, prompt } = req.query;
+        const { model, prompt, tier } = req.query;
+        const session = String(req.query.session ?? "dashboard");
         res.setHeader("Content-Type", "text/event-stream");
         res.setHeader("Cache-Control", "no-cache");
         try {
-            await streamOllama(router.ollamaUrl, String(model), String(prompt), token => {
+            // Ollama's /api/generate takes one prompt, so earlier turns (possibly answered by another model) go in as text.
+            const history = memory ? historyText(await memory.recall(session)) : "";
+            const full = history
+                ? `Earlier turns of this conversation (some answered by other models):\n\n${history}\n\nUser: ${prompt}\nAssistant:`
+                : String(prompt);
+            let reply = "";
+            await streamOllama(router.ollamaUrl, String(model), full, token => {
+                reply += token;
                 res.write(`data: ${JSON.stringify({ token })}\n\n`);
             });
+            // Summaries of long dashboard chats are written locally by the same Ollama model.
+            const summarize = async (system, user) => {
+                let out = "";
+                await streamOllama(router.ollamaUrl, String(model), `${system}\n\n${user}`, t => { out += t; });
+                return out;
+            };
+            if (memory && reply)
+                void memory.remember(session, { prompt: String(prompt), reply, tier: String(tier ?? "ollama"), model: String(model) }, summarize);
         }
         catch (err) {
             res.write(`data: ${JSON.stringify({ error: `Could not reach Ollama at ${router.ollamaUrl}: ${err.message}` })}\n\n`);

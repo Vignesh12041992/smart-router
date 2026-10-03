@@ -4,6 +4,7 @@ import {
   DEFAULT_ANTHROPIC_URL, DEFAULT_OPENROUTER_URL, claudeModels, openRouterModels, normalizeUrl, type TierKey
 } from "./config/registry.js";
 import type { IntelligentRouter } from "./services/router.js";
+import { memoryFromEnv, historyMessages, replyText, type ConversationMemory, type Summarizer } from "./services/memory.js";
 
 /**
  * Where Claude Code requests (/v1/messages) go:
@@ -24,6 +25,11 @@ export interface ProxyOptions {
   apiKey?: string;
   /** Model for each tier. */
   models?: Record<TierKey, string>;
+  /**
+   * Conversation memory, so a model switch mid-conversation keeps the context.
+   * Defaults to the built-in store (see memoryFromEnv). false turns it off.
+   */
+  memory?: ConversationMemory | false;
 }
 
 /**
@@ -41,6 +47,63 @@ export function mountProxy(app: Express, router: IntelligentRouter, opts: ProxyO
     opts.claudeProvider ?? (process.env.SMART_ROUTER_CLAUDE_PROVIDER === "openrouter" ? "openrouter" : "anthropic");
   const anthropicUrl = normalizeUrl(opts.anthropicUrl ?? process.env.SMART_ROUTER_ANTHROPIC_URL ?? DEFAULT_ANTHROPIC_URL);
   const claudeTiers = opts.claudeModels ?? claudeModels();
+  const memory = opts.memory === undefined ? memoryFromEnv() : opts.memory || undefined;
+
+  /**
+   * One conversation = one session. Clients can pin it with the X-Smart-Router-Session header.
+   * Claude Code sends a per-conversation id in metadata.user_id. Otherwise each client address is one session.
+   */
+  const sessionOf = (req: Request, body: any): string =>
+    String(req.headers["x-smart-router-session"] ?? body.metadata?.user_id ?? body.user ?? `client:${req.ip}`);
+
+  /**
+   * Hands a request that carries no history of its own the earlier turns of its session, as real
+   * user/assistant messages, so whichever model answers now continues the same conversation.
+   * Tools that resend the whole conversation (Claude Code, Copilot) already carry it and are left alone.
+   */
+  const withMemory = async (res: Response, body: any, session: string) => {
+    res.setHeader("X-Smart-Router-Session", session);
+    if (!memory || !Array.isArray(body.messages) || body.messages.some((m: any) => m?.role === "assistant")) return body;
+    const recalled = await memory.recall(session);
+    res.setHeader("X-Smart-Router-Memory", `${recalled.turns.length}${recalled.summary ? "+summary" : ""}`);
+    const history = historyMessages(recalled);
+    if (!history.length) return body;
+    // Keep OpenAI system messages first; the Anthropic format keeps its system prompt outside "messages".
+    const lead = body.messages.findIndex((m: any) => m?.role !== "system");
+    const at = lead === -1 ? body.messages.length : lead;
+    return { ...body, messages: [...body.messages.slice(0, at), ...history, ...body.messages.slice(at)] };
+  };
+
+  const saveTurn = (session: string, prompt: string, tier: string, model: string, summarize: Summarizer) =>
+    memory && prompt
+      ? (reply: string) => { if (reply) void memory.remember(session, { prompt, reply, tier, model }, summarize); }
+      : undefined;
+
+  /** Summaries are written by the micro-tier model, with the same key the request used. */
+  const openRouterSummarizer = (key: string): Summarizer => async (system, user) => {
+    const r = await fetch(`${upstream}/chat/completions`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}`, "X-Title": "smart-router" },
+      signal: AbortSignal.timeout(30_000),
+      body: JSON.stringify({ model: models.micro, max_tokens: 1024, messages: [{ role: "system", content: system }, { role: "user", content: user }] })
+    });
+    if (!r.ok) throw new Error(`summary failed: ${r.status}`);
+    const j: any = await r.json();
+    return String(j.choices?.[0]?.message?.content ?? "");
+  };
+
+  /** With Claude Code's own login, summaries use the micro-tier Claude model (Haiku by default). */
+  const claudeSummarizer = (headers: Record<string, string>): Summarizer => async (system, user) => {
+    const r = await fetch(`${anthropicUrl}/messages`, {
+      method: "POST",
+      headers,
+      signal: AbortSignal.timeout(30_000),
+      body: JSON.stringify({ model: claudeTiers.micro, max_tokens: 1024, system, messages: [{ role: "user", content: user }] })
+    });
+    if (!r.ok) throw new Error(`summary failed: ${r.status}`);
+    const j: any = await r.json();
+    return (j.content ?? []).map((b: any) => b.text ?? "").join("");
+  };
 
   app.get("/v1/models", (_req, res) => {
     const ids = ["smart-router/auto", ...new Set(Object.values(models))];
@@ -56,9 +119,10 @@ export function mountProxy(app: Express, router: IntelligentRouter, opts: ProxyO
     const requested = String(body.model ?? "");
     let model = requested;
     let tier = "manual";
+    let prompt = "";
     // Claude Code uses Haiku for small background jobs (titles, summaries). Leave those alone.
     if (!/haiku/i.test(requested) && Array.isArray(body.messages)) {
-      const prompt = lastUserText(body.messages);
+      prompt = lastUserText(body.messages);
       if (prompt) {
         const decision = await router.processRequest(prompt);
         model = claudeTiers[decision.tier];
@@ -74,10 +138,14 @@ export function mountProxy(app: Express, router: IntelligentRouter, opts: ProxyO
       const v = req.headers[h];
       if (v) headers[h] = Array.isArray(v) ? v.join(",") : v;
     }
-    await forward(res, "anthropic", `${anthropicUrl}/${path}${queryString(req)}`, headers, { ...body, model });
+    const session = sessionOf(req, body);
+    // Haiku background jobs (tier "manual" here) are not part of the conversation.
+    const outBody = path === "messages" && tier !== "manual" ? await withMemory(res, body, session) : body;
+    await forward(res, "anthropic", `${anthropicUrl}/${path}${queryString(req)}`, headers, { ...outBody, model },
+      path === "messages" ? saveTurn(session, prompt, tier, model, claudeSummarizer(headers)) : undefined);
   };
 
-  const forward = async (res: Response, format: "openai" | "anthropic", url: string, headers: Record<string, string>, body: unknown) => {
+  const forward = async (res: Response, format: "openai" | "anthropic", url: string, headers: Record<string, string>, body: unknown, onReply?: (reply: string) => void) => {
     let upstreamRes: globalThis.Response;
     try {
       upstreamRes = await fetch(url, { method: "POST", headers, body: JSON.stringify(body) });
@@ -87,7 +155,14 @@ export function mountProxy(app: Express, router: IntelligentRouter, opts: ProxyO
     res.status(upstreamRes.status);
     res.setHeader("Content-Type", upstreamRes.headers.get("content-type") ?? "application/json");
     if (!upstreamRes.body) return res.end();
-    Readable.fromWeb(upstreamRes.body as any).pipe(res);
+    const stream = Readable.fromWeb(upstreamRes.body as any);
+    stream.pipe(res);
+    if (onReply && upstreamRes.ok) {
+      const decoder = new TextDecoder();
+      let raw = "";
+      stream.on("data", chunk => { if (raw.length < 400_000) raw += decoder.decode(chunk, { stream: true }); });
+      stream.on("end", () => onReply(replyText(raw)));
+    }
   };
 
   const handle = (format: "openai" | "anthropic") => async (req: Request, res: Response) => {
@@ -102,9 +177,9 @@ export function mountProxy(app: Express, router: IntelligentRouter, opts: ProxyO
     // "gpt-4o", "claude-sonnet-4-5" that Claude Code sends) is routed by smart-router.
     let model = String(body.model ?? "");
     let tier = "manual";
+    const prompt = lastUserText(body.messages);
     if (!model.includes("/") || model === "smart-router/auto") {
-      const prompt = lastUserText(body.messages) || "hello";
-      const decision = await router.processRequest(prompt);
+      const decision = await router.processRequest(prompt || "hello");
       model = models[decision.tier];
       tier = decision.tier;
       res.setHeader("X-Smart-Router-Complexity", decision.complexityScore);
@@ -122,7 +197,10 @@ export function mountProxy(app: Express, router: IntelligentRouter, opts: ProxyO
     };
     if (format === "anthropic") headers["anthropic-version"] = String(req.headers["anthropic-version"] ?? "2023-06-01");
 
-    await forward(res, format, `${upstream}/${format === "openai" ? "chat/completions" : "messages"}`, headers, { ...body, model });
+    const session = sessionOf(req, body);
+    const outBody = await withMemory(res, body, session);
+    await forward(res, format, `${upstream}/${format === "openai" ? "chat/completions" : "messages"}`, headers,
+      { ...outBody, model }, saveTurn(session, prompt, tier, model, openRouterSummarizer(key)));
   };
 
   app.post("/v1/chat/completions", wrap(handle("openai"), "openai"));

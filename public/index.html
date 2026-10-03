@@ -54,6 +54,8 @@
         `Engine: ${s.engine} · Ollama: ${s.ollamaOnline ? `online (${s.models.length} models)` : "offline"}`;
     }).catch(() => {});
 
+    const session = crypto.randomUUID(); // one conversation per page load
+
     async function dispatchPipeline() {
       const prompt = document.getElementById("txtInput").value.trim();
       if (!prompt) return;
@@ -85,7 +87,7 @@
       updateHistoryUI(prompt, decision);
 
       term.innerText = "";
-      const sse = new EventSource(`/api/stream?model=${encodeURIComponent(decision.modelName)}&prompt=${encodeURIComponent(prompt)}`);
+      const sse = new EventSource(`/api/stream?session=${session}&tier=${decision.tier}&model=${encodeURIComponent(decision.modelName)}&prompt=${encodeURIComponent(prompt)}`);
       sse.onmessage = (e) => {
         if (e.data === "[DONE]") { sse.close(); btn.disabled = false; return; }
         const data = JSON.parse(e.data);

@@ -5,6 +5,7 @@
 - New proxy endpoints for coding tools: `POST /v1/chat/completions` (OpenAI), `POST /v1/messages` (Anthropic / Claude Code), `GET /v1/models`.
 - Claude Code uses its own login by default: only the model changes (Haiku / Sonnet / Opus per tier). No extra key.
 - OpenAI-format requests are routed to a tier, then forwarded to OpenRouter with streaming.
+- Conversation memory, on by default with no setup: when Smart Router switches models mid-conversation, the new model is handed the earlier turns. Long conversations are kept within `SMART_ROUTER_MEMORY_TOKENS` (default 2000) by a running summary that the micro-tier model writes in the background. `SMART_ROUTER_MEMORY=off` turns it off; `OMNIROUTE_URL` optionally stores it in an OmniRoute server.
 - Laya is no longer installed with the package. Install size drops from ~300 MB to ~5 MB. `smart-router download` installs it on demand.
 
 ## 1.0.0

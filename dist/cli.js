@@ -8,6 +8,7 @@ import { IntelligentRouter, isLayaDownloaded } from "./services/router.js";
 import { streamOllama } from "./services/ollama.js";
 import { startServer } from "./server.js";
 import { importLaya, installLaya, LAYA_HOME } from "./services/laya.js";
+import { memoryFromEnv } from "./services/memory.js";
 import { claudeModels, openRouterModels } from "./config/registry.js";
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const pkg = JSON.parse(readFileSync(path.join(__dirname, "../package.json"), "utf8"));
@@ -39,6 +40,8 @@ Environment:
   OPENROUTER_API_KEY                Key for OpenAI-style tools (forwarded to OpenRouter)
   SMART_ROUTER_<TIER>_MODEL         OpenRouter model per tier
   SMART_ROUTER_CLAUDE_PROVIDER      Set to "openrouter" to send Claude Code to OpenRouter instead
+  SMART_ROUTER_MEMORY               Conversation memory across model switches (default: on). "off" turns it off
+  SMART_ROUTER_MEMORY_TOKENS        Most tokens of earlier context per request (default: 2000); older turns are summarized
       --host <address>              Host for "serve" (default: 127.0.0.1)
       --json                        Print "route" output as JSON
   -q, --quiet                       Hide progress messages
@@ -203,6 +206,11 @@ async function doctor(ollamaUrl) {
         ok("OPENROUTER_API_KEY is set");
     else
         console.log("[--] OPENROUTER_API_KEY not set. Only needed for OpenAI-style tools; Claude Code uses its own login.");
+    const memory = memoryFromEnv();
+    if (memory)
+        ok(`Conversation memory on (${memory.kind}), no setup needed`);
+    else
+        console.log("[--] Conversation memory off (SMART_ROUTER_MEMORY=off)");
     try {
         const laya = await importLaya();
         ok("Laya package installed");
