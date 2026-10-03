@@ -5,19 +5,19 @@ import { fileURLToPath } from "url";
 import type { IntelligentRouter } from "./services/router.js";
 import { streamOllama } from "./services/ollama.js";
 import { mountProxy, type ProxyOptions } from "./proxy.js";
-import { OmniRouteMemory, contextBlock } from "./services/memory.js";
+import { memoryFromEnv, historyText } from "./services/memory.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 export function createApp(router: IntelligentRouter, proxy: ProxyOptions = {}) {
   const app = express();
   app.use(express.json({ limit: "50mb" })); // coding tools send large contexts
-  const memory = proxy.memory ?? OmniRouteMemory.fromEnv();
-  mountProxy(app, router, { ...proxy, memory });
+  const memory = proxy.memory === undefined ? memoryFromEnv() : proxy.memory || undefined;
+  mountProxy(app, router, { ...proxy, memory: memory ?? false });
   app.use(express.static(path.join(__dirname, "../public")));
 
   app.get("/api/status", (_req, res) => {
-    res.json({ engine: router.activeEngine, ollamaOnline: router.ollamaOnline, models: router.ollamaModels });
+    res.json({ engine: router.activeEngine, ollamaOnline: router.ollamaOnline, models: router.ollamaModels, memory: memory?.kind ?? "off" });
   });
 
   app.post("/api/route", async (req, res) => {
@@ -36,8 +36,10 @@ export function createApp(router: IntelligentRouter, proxy: ProxyOptions = {}) {
 
     try {
       // Ollama's /api/generate takes one prompt, so earlier turns (possibly answered by another model) go in as text.
-      const history = memory ? await memory.recall(session) : "";
-      const full = history ? `${contextBlock(history)}\n\nUser: ${prompt}\nAssistant:` : String(prompt);
+      const history = memory ? historyText(await memory.recall(session)) : "";
+      const full = history
+        ? `Earlier turns of this conversation (some answered by other models):\n\n${history}\n\nUser: ${prompt}\nAssistant:`
+        : String(prompt);
       let reply = "";
       await streamOllama(router.ollamaUrl, String(model), full, token => {
         reply += token;

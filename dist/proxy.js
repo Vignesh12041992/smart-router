@@ -1,6 +1,6 @@
 import { Readable } from "stream";
 import { DEFAULT_ANTHROPIC_URL, DEFAULT_OPENROUTER_URL, claudeModels, openRouterModels, normalizeUrl } from "./config/registry.js";
-import { OmniRouteMemory, contextBlock, replyText } from "./services/memory.js";
+import { memoryFromEnv, historyMessages, replyText } from "./services/memory.js";
 /**
  * Adds the endpoints coding tools talk to:
  *   POST /v1/chat/completions  OpenAI format  (Copilot, Devin, Cursor, Continue, Aider, ...)
@@ -15,26 +15,31 @@ export function mountProxy(app, router, opts = {}) {
     const claudeProvider = opts.claudeProvider ?? (process.env.SMART_ROUTER_CLAUDE_PROVIDER === "openrouter" ? "openrouter" : "anthropic");
     const anthropicUrl = normalizeUrl(opts.anthropicUrl ?? process.env.SMART_ROUTER_ANTHROPIC_URL ?? DEFAULT_ANTHROPIC_URL);
     const claudeTiers = opts.claudeModels ?? claudeModels();
-    const memory = opts.memory ?? OmniRouteMemory.fromEnv();
-    /** One conversation = one session. Clients can pin it with the X-Smart-Router-Session header. */
-    const sessionOf = (req, body) => String(req.headers["x-smart-router-session"] ?? body.metadata?.user_id ?? body.user ?? "default");
+    const memory = opts.memory === undefined ? memoryFromEnv() : opts.memory || undefined;
     /**
-     * Gives a request that carries no history of its own the earlier turns of its session.
-     * Tools that resend the whole conversation (Claude Code, Copilot) already carry the context.
+     * One conversation = one session. Clients can pin it with the X-Smart-Router-Session header.
+     * Claude Code sends a per-conversation id in metadata.user_id. Otherwise each client address is one session.
      */
-    const withMemory = async (body, format, session) => {
-        if (!memory || !Array.isArray(body.messages) || body.messages.length > 1)
+    const sessionOf = (req, body) => String(req.headers["x-smart-router-session"] ?? body.metadata?.user_id ?? body.user ?? `client:${req.ip}`);
+    /**
+     * Hands a request that carries no history of its own the earlier turns of its session, as real
+     * user/assistant messages, so whichever model answers now continues the same conversation.
+     * Tools that resend the whole conversation (Claude Code, Copilot) already carry it and are left alone.
+     */
+    const withMemory = async (res, body, session) => {
+        res.setHeader("X-Smart-Router-Session", session);
+        if (!memory || !Array.isArray(body.messages) || body.messages.some((m) => m?.role === "assistant"))
             return body;
-        const history = await memory.recall(session);
-        if (!history)
+        const history = historyMessages(await memory.recall(session));
+        res.setHeader("X-Smart-Router-Memory", history.length / 2);
+        if (!history.length)
             return body;
-        const note = contextBlock(history);
-        if (format === "openai")
-            return { ...body, messages: [{ role: "system", content: note }, ...body.messages] };
-        const system = typeof body.system === "string" ? [{ type: "text", text: body.system }] : body.system ?? [];
-        return { ...body, system: [{ type: "text", text: note }, ...system] };
+        // Keep OpenAI system messages first; the Anthropic format keeps its system prompt outside "messages".
+        const lead = body.messages.findIndex((m) => m?.role !== "system");
+        const at = lead === -1 ? body.messages.length : lead;
+        return { ...body, messages: [...body.messages.slice(0, at), ...history, ...body.messages.slice(at)] };
     };
-    const saveTurn = (session, prompt, tier, model) => memory && prompt && tier !== "manual"
+    const saveTurn = (session, prompt, tier, model) => memory && prompt
         ? (reply) => { if (reply)
             void memory.remember(session, { prompt, reply, tier, model }); }
         : undefined;
@@ -72,7 +77,8 @@ export function mountProxy(app, router, opts = {}) {
                 headers[h] = Array.isArray(v) ? v.join(",") : v;
         }
         const session = sessionOf(req, body);
-        const outBody = path === "messages" && tier !== "manual" ? await withMemory(body, "anthropic", session) : body;
+        // Haiku background jobs (tier "manual" here) are not part of the conversation.
+        const outBody = path === "messages" && tier !== "manual" ? await withMemory(res, body, session) : body;
         await forward(res, "anthropic", `${anthropicUrl}/${path}${queryString(req)}`, headers, { ...outBody, model }, path === "messages" ? saveTurn(session, prompt, tier, model) : undefined);
     };
     const forward = async (res, format, url, headers, body, onReply) => {
@@ -129,7 +135,7 @@ export function mountProxy(app, router, opts = {}) {
         if (format === "anthropic")
             headers["anthropic-version"] = String(req.headers["anthropic-version"] ?? "2023-06-01");
         const session = sessionOf(req, body);
-        const outBody = tier !== "manual" ? await withMemory(body, format, session) : body;
+        const outBody = await withMemory(res, body, session);
         await forward(res, format, `${upstream}/${format === "openai" ? "chat/completions" : "messages"}`, headers, { ...outBody, model }, saveTurn(session, prompt, tier, model));
     };
     app.post("/v1/chat/completions", wrap(handle("openai"), "openai"));

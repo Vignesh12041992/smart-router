@@ -85,6 +85,30 @@ They work only where the tool lets you set a custom OpenAI-compatible endpoint, 
 Endpoints: `POST /v1/messages`, `POST /v1/messages/count_tokens`, `POST /v1/chat/completions`,
 `GET /v1/models`. Response headers `X-Smart-Router-Tier` and `X-Smart-Router-Model` show each decision.
 
+### Memory: the context follows the conversation when the model changes
+
+Smart Router may pick a different model for each prompt. Memory makes that switch seamless.
+It is **on by default and needs no setup**: no extra server, URL or key.
+
+- After each answer, Smart Router saves the prompt and reply under the conversation's session.
+- When a request arrives without earlier turns, Smart Router adds them back as normal
+  user/assistant messages. The new model sees the whole conversation, whichever model answered before.
+- Tools that resend the full conversation each time (Claude Code, Copilot, most chat UIs) already
+  carry the context, so nothing is added to them.
+
+A session is one conversation. Smart Router takes it from, in order: the `X-Smart-Router-Session`
+header, Claude Code's per-conversation id, the OpenAI `user` field, or else the client's address.
+Send your own `X-Smart-Router-Session` to keep separate conversations apart.
+
+Memory stays inside the Smart Router process. Sessions idle for 6 hours are forgotten, and it
+keeps the last 10 turns per request. Response headers `X-Smart-Router-Session` and
+`X-Smart-Router-Memory` (number of turns added) show what happened.
+
+- Turn it off: `SMART_ROUTER_MEMORY=off`.
+- Optional: share memory between several Smart Router processes through an
+  [OmniRoute](https://github.com/diegosouzapw/OmniRoute) server with `OMNIROUTE_URL`
+  (and `OMNIROUTE_API_KEY` if it has auth on).
+
 The default engine is the offline keyword engine, so nothing large is downloaded.
 The Laya AI engine is optional: `smart-router download` installs it (~2 GB) into `~/.smart-router`.
 
@@ -261,6 +285,8 @@ smart-router download
 | `-q, --quiet`                      |                   | off                      |
 |                                    | `LAYA_CACHE`      | `~/.cache/receptron-laya`|
 |                                    | `HF_TOKEN`        | Hugging Face token, if needed |
+|                                    | `SMART_ROUTER_MEMORY` | on (built in). `off` turns memory off |
+|                                    | `OMNIROUTE_URL`   | Optional. Keep memory in an OmniRoute server |
 
 Settings for the Python wrapper:
 
@@ -283,7 +309,7 @@ The same server has a small API:
 
 | Method | Path                                  | Returns                                 |
 |--------|---------------------------------------|-----------------------------------------|
-| `GET`  | `/api/status`                         | Engine, Ollama status, model list       |
+| `GET`  | `/api/status`                         | Engine, Ollama status, model list, memory |
 | `POST` | `/api/route` with `{"prompt": "..."}` | The routing decision (same as `--json`) |
 | `GET`  | `/api/stream?model=...&prompt=...`    | The answer as Server-Sent Events        |
 
