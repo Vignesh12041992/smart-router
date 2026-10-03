@@ -1,14 +1,202 @@
 # Smart Router
 
 [![CI](https://github.com/Vignesh12041992/smart-router/actions/workflows/ci.yml/badge.svg)](https://github.com/Vignesh12041992/smart-router/actions/workflows/ci.yml)
-[![npm](https://img.shields.io/npm/v/laya-smart-router)](https://www.npmjs.com/package/laya-smart-router)
-[![PyPI](https://img.shields.io/pypi/v/laya-smart-router)](https://pypi.org/project/laya-smart-router/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Pick the best local [Ollama](https://ollama.com) model for any prompt.
+Smart Router picks the right model for each prompt, so simple prompts use cheap, fast models
+and hard prompts use strong ones.
 
-Smart Router reads your prompt, works out what kind of task it is (chat, code, reasoning or
-writing), rates how complex it is, and picks the best model you have installed.
+It runs on your computer and sits between your coding tool and the model provider:
+
+```text
+Claude Code / Copilot / Devin / your app
+            │
+            ▼
+   Smart Router (localhost:3000)   ← reads the prompt, picks a tier
+            │
+            ├─ "hey", "what is 1+1?"          → micro    → Claude Haiku
+            ├─ "fix this TypeScript bug"      → coder    → Claude Sonnet
+            ├─ "prove this step by step"      → reasoner → Claude Opus
+            └─ "write a summary"              → general  → Claude Sonnet
+            │
+            ▼
+   Anthropic (your own login) · OpenRouter · local Ollama
+```
+
+- **Claude Code needs no extra key.** It keeps using your normal login.
+- **Context is never lost when the model changes.** The next model gets the whole conversation.
+- **Built-in memory** for tools that send one message at a time, kept small by a running summary.
+- **Works offline** with the keyword engine. An optional AI engine (Laya) is available.
+- Works on **Windows**, **macOS** and **Linux**. Needs [Node.js](https://nodejs.org) 20 or newer.
+
+## Contents
+
+- [Quick start with Claude Code](#quick-start-with-claude-code)
+- [How routing works](#how-routing-works)
+- [Switching models keeps the context](#switching-models-keeps-the-context)
+- [Other tools (OpenAI format)](#other-tools-openai-format)
+- [Memory for one-message-at-a-time clients](#memory-for-one-message-at-a-time-clients)
+- [Local models with Ollama](#local-models-with-ollama)
+- [Install](#install)
+- [Commands](#commands)
+- [Settings](#settings)
+- [HTTP API](#http-api)
+- [Use it as a library](#use-it-as-a-library)
+- [Engines and the Laya model](#engines-and-the-laya-model)
+- [Troubleshooting](#troubleshooting)
+- [Development](#development)
+
+## Quick start with Claude Code
+
+**1. Install** (the npm package is not published yet, so install from GitHub):
+
+```sh
+npm install -g https://github.com/Vignesh12041992/smart-router/tarball/main
+```
+
+**2. Start Smart Router** in one terminal, and leave it open:
+
+```sh
+smart-router serve
+```
+
+**3. Start Claude Code through it** in a second terminal:
+
+```sh
+export ANTHROPIC_BASE_URL=http://localhost:3000     # Windows PowerShell: $env:ANTHROPIC_BASE_URL="http://localhost:3000"
+claude
+```
+
+`export` lasts only for that terminal. Close it, and `claude` goes straight to Anthropic again.
+
+**4. Check it works.** Each prompt prints a line in the first terminal:
+
+```text
+[smart-router] claude micro claude-opus-5-5 -> claude-haiku-4-5 (stream)
+```
+
+That reads: tier `micro`; Claude Code asked for Opus; Smart Router sent it to Haiku.
+
+**Make it permanent (optional).** Add this to `~/.claude/settings.json`:
+
+```json
+{ "env": { "ANTHROPIC_BASE_URL": "http://localhost:3000" } }
+```
+
+Then plain `claude` always goes through Smart Router. Claude Code will not work while
+`smart-router serve` is stopped, so remove the line to go back.
+
+**Just testing from a clone?** Skip the global install:
+
+```sh
+git clone https://github.com/Vignesh12041992/smart-router.git
+cd smart-router
+npm install
+node dist/cli.js serve
+```
+
+## How routing works
+
+Smart Router reads your **latest typed message** and puts it in one of four tiers:
+
+| Tier | Example prompts | Claude Code model | Change with |
+| --- | --- | --- | --- |
+| `micro` | "hey", "thanks", "what is 1+1?" | `claude-haiku-4-5` | `SMART_ROUTER_CLAUDE_MICRO_MODEL` |
+| `coder` | "fix this TypeScript bug" | `claude-sonnet-5-5` | `SMART_ROUTER_CLAUDE_CODER_MODEL` |
+| `reasoner` | "prove this step by step" | `claude-opus-5-5` | `SMART_ROUTER_CLAUDE_REASONER_MODEL` |
+| `general` | "write a summary", everything else | `claude-sonnet-5-5` | `SMART_ROUTER_CLAUDE_GENERAL_MODEL` |
+
+Example: send coding prompts to Opus too.
+
+```sh
+SMART_ROUTER_CLAUDE_CODER_MODEL=claude-opus-5-5 smart-router serve
+```
+
+Details that keep routing correct:
+
+- **One model per task.** While Claude Code works through a task's tool calls, the tier stays the
+  one picked for your message.
+- **Hidden context is ignored.** Claude Code adds `<system-reminder>` blocks (CLAUDE.md, todo
+  lists) to your message. They are not routed, so "hey" stays `micro`.
+- **Claude Code's own background calls** (Haiku for titles and summaries) are left alone.
+- **Requests are adjusted to fit Haiku.** Claude Code shapes each request for the model you chose.
+  When Smart Router sends it to Haiku instead, it caps output at 64K tokens and leaves out
+  adaptive thinking and `effort`, which Haiku does not accept.
+- **Long conversations skip Haiku.** Haiku has a 200K token window. A conversation over about
+  130K tokens goes to the `general` model instead, and the log says so.
+
+## Switching models keeps the context
+
+Claude Code sends the **whole conversation** with every request. So when Smart Router moves from
+Opus to Haiku and back, each model sees everything: your prompts, earlier answers, tool calls and
+file contents. Nothing is cut.
+
+Two things to know:
+
+- **Hidden reasoning stays with its model.** Opus's private thinking stays in the history, but
+  other models ignore it. Haiku sees Opus's answers, not how Opus got there.
+- **Each model has its own cache.** The first prompt on a new model reads the conversation at full
+  price. On Haiku that is usually a few cents.
+
+## Other tools (OpenAI format)
+
+Copilot, Devin, Cursor, Continue, Aider and most chat apps speak the OpenAI format. Smart Router
+forwards them to [OpenRouter](https://openrouter.ai), which needs a key:
+
+```sh
+export OPENROUTER_API_KEY=sk-or-...       # https://openrouter.ai/keys
+smart-router serve
+```
+
+In the tool, set:
+
+- **Base URL:** `http://localhost:3000/v1`
+- **Model:** `smart-router/auto`
+
+Tier models default to `openrouter/free`. Change them with `SMART_ROUTER_<TIER>_MODEL`, for example
+`SMART_ROUTER_CODER_MODEL=qwen/qwen3-coder:free`. A full OpenRouter id such as
+`anthropic/claude-sonnet-4` is used as is, without routing.
+
+Copilot and Devin sign in to their own services, and Smart Router cannot use those logins. They
+work only where the tool lets you set a custom OpenAI-compatible endpoint and key.
+
+To send Claude Code to OpenRouter as well, set `SMART_ROUTER_CLAUDE_PROVIDER=openrouter`.
+
+## Memory for one-message-at-a-time clients
+
+Some clients send only the new message, not the conversation. Examples: the dashboard, simple
+scripts, some API callers. For them, Smart Router remembers the conversation and hands it to
+whichever model answers next.
+
+It is **on by default and needs no setup**: no extra server, URL or key.
+
+1. After each answer, the prompt and reply are saved for that conversation (session).
+2. When a request arrives without earlier turns, they are added back as normal messages.
+3. Each request gets at most `SMART_ROUTER_MEMORY_TOKENS` (default 2000) tokens of earlier context:
+   - Short conversations go over word for word.
+   - Past the budget, older turns are folded into a **running summary** (goals, decisions,
+     facts, names, file names, open questions). Recent turns stay word for word.
+   - The summary is written by the cheap micro-tier model with the request's own login or key,
+     in the background after the reply, so it never slows an answer.
+   - If a summary fails, the oldest turns are left out, so the budget still holds.
+
+Clients that send the whole conversation, such as Claude Code, get nothing added and never trigger
+a summary.
+
+**Sessions.** A session is one conversation. It comes from, in order: the `X-Smart-Router-Session`
+header, Claude Code's conversation id, the OpenAI `user` field, or else the client's address.
+Send your own `X-Smart-Router-Session` to keep conversations apart.
+
+**Storage.** Memory lives inside the Smart Router process. It is cleared on restart, and sessions
+idle for 6 hours are dropped. To share memory between several Smart Router processes, point
+`OMNIROUTE_URL` at an [OmniRoute](https://github.com/diegosouzapw/OmniRoute) server.
+
+Turn memory off with `SMART_ROUTER_MEMORY=off`.
+
+## Local models with Ollama
+
+Smart Router can also pick from your installed [Ollama](https://ollama.com) models, with no cloud
+at all.
 
 ```console
 $ smart-router route "write a python function to reverse a linked list"
@@ -19,160 +207,28 @@ Confidence:  83.3%
 Engine:      keyword
 ```
 
-- Works on **Windows** (cmd, PowerShell, Git Bash), **macOS** and **Linux**.
-- Install with **npm, npx, pnpm, yarn, bun, pipx, pip or uv**.
-- Routing works even when Ollama is off.
-- Optional AI routing with [Laya](https://huggingface.co/convaiinnovations/laya), a small decision
-  model that does not generate text, so it is fast.
-
-## Contents
-
-- [Use it with Claude Code, Copilot or Devin](#use-it-with-claude-code-copilot-or-devin)
-- [Quick start](#quick-start)
-- [Install](#install)
-- [Commands](#commands)
-- [Engines and the Laya model](#engines-and-the-laya-model)
-- [Options and environment variables](#options-and-environment-variables)
-- [Web dashboard and HTTP API](#web-dashboard-and-http-api)
-- [Use it as a library](#use-it-as-a-library)
-- [Update and uninstall](#update-and-uninstall)
-- [Troubleshooting](#troubleshooting)
-- [Development](#development)
-
-## Use it with Claude Code, Copilot or Devin
-
-Smart Router sits between your coding tool and the model provider. For each prompt it picks a
-model (small, coding, or reasoning) and forwards the request. Answers stream back.
-
-### Claude Code: no extra key
-
 ```sh
-npx laya-smart-router serve                 # ~5 MB install, no model download
-ANTHROPIC_BASE_URL=http://localhost:3000 claude
+smart-router run "explain recursion simply"   # route, then stream the answer from Ollama
+smart-router serve                            # dashboard at http://localhost:3000
 ```
 
-Claude Code keeps using **your normal login** (Claude subscription or API key). Smart Router only
-changes the `model` field, then sends the request to Anthropic with your own credentials.
+For local models, each tier looks for models named like this:
 
-| Tier | Example prompt | Default model |
-| --- | --- | --- |
-| micro | "hi", "thanks" | `claude-haiku-4-5` |
-| coder | "fix this TypeScript bug" | `claude-sonnet-5-5` |
-| reasoner | "prove this step by step" | `claude-opus-5-5` |
-| general | "write a summary" | `claude-sonnet-5-5` |
+| Tier | Looks for |
+| --- | --- |
+| `micro` | `phi`, `gemma`, `llama3.2:1b` |
+| `coder` | `coder`, `code`, `qwen` |
+| `reasoner` | `deepseek-r1`, `r1`, `reasoning` |
+| `general` | `llama3`, `mistral`, `latest` |
 
-Change one with `SMART_ROUTER_CLAUDE_<TIER>_MODEL`, for example
-`SMART_ROUTER_CLAUDE_REASONER_MODEL=claude-fable-5-1`.
-
-- The model is picked from your latest typed message, so it stays the same while Claude Code works
-  through that task's tool calls.
-- Claude Code's own Haiku background calls (titles, summaries) are left alone.
-- When a prompt is sent to Haiku, settings Haiku does not accept are adjusted: output is capped at
-  64K tokens, and adaptive thinking and `effort` are left out. A conversation too long for Haiku's
-  200K window goes to the general model instead.
-
-### Other tools (OpenAI format): need an OpenRouter key
-
-```sh
-export OPENROUTER_API_KEY=sk-or-...         # https://openrouter.ai/keys
-npx laya-smart-router serve
-```
-
-Set the tool's base URL to `http://localhost:3000/v1` and its model to `smart-router/auto`.
-Tier models default to `openrouter/free`. Change them with `SMART_ROUTER_<TIER>_MODEL`.
-To send Claude Code to OpenRouter too, set `SMART_ROUTER_CLAUDE_PROVIDER=openrouter`.
-
-Copilot and Devin sign in to their own services, and Smart Router cannot borrow those logins.
-They work only where the tool lets you set a custom OpenAI-compatible endpoint, with a key.
-
-Endpoints: `POST /v1/messages`, `POST /v1/messages/count_tokens`, `POST /v1/chat/completions`,
-`GET /v1/models`. Response headers `X-Smart-Router-Tier` and `X-Smart-Router-Model` show each decision.
-
-### Memory: the context follows the conversation when the model changes
-
-Smart Router may pick a different model for each prompt. Memory makes that switch seamless.
-It is **on by default and needs no setup**: no extra server, URL or key.
-
-- After each answer, Smart Router saves the prompt and reply under the conversation's session.
-- When a request arrives without earlier turns, Smart Router adds them back as normal
-  user/assistant messages. The new model sees the whole conversation, whichever model answered before.
-- Tools that resend the full conversation each time (Claude Code, Copilot, most chat UIs) already
-  carry the context, so nothing is added to them.
-
-A session is one conversation. Smart Router takes it from, in order: the `X-Smart-Router-Session`
-header, Claude Code's per-conversation id, the OpenAI `user` field, or else the client's address.
-Send your own `X-Smart-Router-Session` to keep separate conversations apart.
-
-**It stays small: a smart summary instead of the whole conversation.** Each request gets at most
-`SMART_ROUTER_MEMORY_TOKENS` (default 2000) tokens of earlier context:
-
-- Short conversations go over word for word.
-- Once a conversation grows past the budget, older turns are folded into a running summary.
-  It keeps goals, decisions, facts, names, file names and open questions, and drops filler.
-  The recent turns stay word for word.
-- The summary is written by the cheap micro-tier model (Haiku for Claude Code, `SMART_ROUTER_MICRO_MODEL`
-  on OpenRouter, the same Ollama model on the dashboard), with the login or key the request already uses.
-- It runs in the background after the answer is sent, so it never slows a reply.
-- Only conversations that rely on memory are summarized. Tools that resend everything never trigger it.
-- If a summary call fails, the oldest turns are simply left out, so the budget still holds.
-
-Memory stays inside the Smart Router process; sessions idle for 6 hours are forgotten.
-Response headers `X-Smart-Router-Session` and `X-Smart-Router-Memory` (turns added, plus `+summary`)
-show what happened.
-
-- Turn it off: `SMART_ROUTER_MEMORY=off`.
-- Optional: share memory between several Smart Router processes through an
-  [OmniRoute](https://github.com/diegosouzapw/OmniRoute) server with `OMNIROUTE_URL`
-  (and `OMNIROUTE_API_KEY` if it has auth on).
-
-The default engine is the offline keyword engine, so nothing large is downloaded.
-The Laya AI engine is optional: `smart-router download` installs it (~2 GB) into `~/.smart-router`.
-
-## Quick start
-
-```sh
-npm install -g laya-smart-router
-smart-router doctor                        # check your setup
-smart-router route "fix my java null pointer bug"
-smart-router run "explain recursion simply"  # needs Ollama running
-```
+If nothing matches, it uses your first model. Routing works even when Ollama is off; only `run`
+and the dashboard need it.
 
 ## Install
 
-**You need [Node.js](https://nodejs.org) 20 or newer**, even for the pipx and pip installs.
-[Ollama](https://ollama.com) is needed only to get answers (`run` and the dashboard), not to route.
+You need [Node.js](https://nodejs.org) 20 or newer.
 
-### npm and other JavaScript package managers
-
-```sh
-npm install -g laya-smart-router     # npm
-pnpm add -g laya-smart-router        # pnpm
-yarn global add laya-smart-router    # yarn (v1)
-bun add -g laya-smart-router         # bun
-```
-
-Run it once without installing:
-
-```sh
-npx laya-smart-router route "hello"
-pnpm dlx laya-smart-router route "hello"
-bunx laya-smart-router route "hello"
-```
-
-### Python tools
-
-```sh
-pipx install laya-smart-router                    # recommended for Python users
-uv tool install laya-smart-router                 # uv
-uvx --from laya-smart-router smart-router route "hello"   # run once with uv
-pip install --user laya-smart-router              # plain pip
-python -m smart_router_cli route "hello"          # if the command is not on your PATH
-```
-
-The Python package is a small wrapper. On first run it installs the matching npm package into a
-private folder, then runs it. After that it starts instantly.
-
-### Straight from GitHub (before the npm release, or for the latest code)
+**From GitHub** (recommended until the npm release):
 
 ```sh
 npm install -g https://github.com/Vignesh12041992/smart-router/tarball/main
@@ -182,153 +238,99 @@ pipx install "git+https://github.com/Vignesh12041992/smart-router.git#subdirecto
 Use the full `https://.../tarball/...` link. The short `github:user/repo` form breaks global npm
 installs.
 
-### From source
+**From source:**
 
 ```sh
 git clone https://github.com/Vignesh12041992/smart-router.git
 cd smart-router
 npm install
-npm link            # makes `smart-router` point at your local copy
+npm link        # optional: makes `smart-router` point at this copy
 ```
 
-### Windows
+**After the npm and PyPI release** (not published yet):
 
-All commands above work the same in **cmd**, **PowerShell** and **Git Bash**. npm creates
-`smart-router.cmd` and `smart-router.ps1` for you.
-If PowerShell says running scripts is disabled, run this once:
-
-```powershell
-Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+```sh
+npm install -g laya-smart-router      # or: npx laya-smart-router serve
+pipx install laya-smart-router        # or: uv tool install laya-smart-router
 ```
+
+The Python package is a small wrapper. On first run it installs the matching npm package into a
+private folder.
+
+**Windows:** everything works the same in cmd, PowerShell and Git Bash. If PowerShell says running
+scripts is disabled, run once: `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`.
+
+**Update or remove:** run the same install command again to update.
+Remove with `npm uninstall -g laya-smart-router` or `pipx uninstall laya-smart-router`.
 
 ## Commands
 
-| Command                           | What it does                                          |
-|-----------------------------------|-------------------------------------------------------|
-| `smart-router route "<prompt>"`   | Show which model fits the prompt                      |
-| `smart-router run "<prompt>"`     | Route the prompt, then stream the answer from Ollama  |
-| `smart-router serve`              | Start the web dashboard at http://localhost:3000      |
-| `smart-router models`             | List your installed Ollama models                     |
-| `smart-router download`           | Install the optional Laya AI engine (~2 GB, one time)  |
-| `smart-router doctor`             | Check Node.js, Ollama and the Laya model              |
-| `smart-router version`            | Show the version                                      |
-| `smart-router --help`             | Show help                                             |
+| Command | What it does |
+| --- | --- |
+| `smart-router serve` | Start the proxy and the dashboard at http://localhost:3000 |
+| `smart-router route "<prompt>"` | Show which tier and model fit a prompt |
+| `smart-router run "<prompt>"` | Route a prompt, then stream the answer from Ollama |
+| `smart-router models` | List your installed Ollama models |
+| `smart-router doctor` | Check Node.js, Ollama, keys, memory and the Laya model |
+| `smart-router download` | Install the optional Laya AI engine (~2 GB, one time) |
+| `smart-router version` | Show the version |
 
-### Examples
+Common options:
 
-```sh
-# Route a prompt
-smart-router route "prove that the square root of 2 is irrational"
+| Option | Default |
+| --- | --- |
+| `-p, --port <number>` (serve) | `3000`, or `$PORT` |
+| `--host <address>` (serve) | `127.0.0.1` |
+| `-e, --engine <auto\|laya\|keyword>` | `auto` |
+| `--ollama-url <url>` | `$OLLAMA_HOST` or `http://localhost:11434` |
+| `--json` (route) | off |
+| `-q, --quiet` | off |
 
-# JSON output, for scripts
-smart-router route --json "hello"
+The prompt can also come from a pipe: `echo "fix my python bug" | smart-router route`.
 
-# Read the prompt from a pipe or a file
-echo "summarize this article" | smart-router route
-smart-router run < prompt.txt            # macOS / Linux / Git Bash
-type prompt.txt | smart-router run       # Windows cmd
-Get-Content prompt.txt | smart-router run   # PowerShell
+## Settings
 
-# Force an engine
-smart-router route -e keyword "hello"
-smart-router route -e laya "hello"
+All settings are optional environment variables.
 
-# Use Ollama on another machine
-smart-router run --ollama-url http://192.168.1.20:11434 "write a haiku"
+| Variable | Default | What it does |
+| --- | --- | --- |
+| `SMART_ROUTER_CLAUDE_<TIER>_MODEL` | see [tiers](#how-routing-works) | Claude model per tier for Claude Code |
+| `SMART_ROUTER_CLAUDE_PROVIDER` | `anthropic` | `openrouter` sends Claude Code to OpenRouter |
+| `OPENROUTER_API_KEY` | — | Key for OpenAI-format tools |
+| `SMART_ROUTER_<TIER>_MODEL` | `openrouter/free` | OpenRouter model per tier |
+| `SMART_ROUTER_MEMORY` | on | `off` turns memory off |
+| `SMART_ROUTER_MEMORY_TOKENS` | `2000` | Most tokens of earlier context per request |
+| `OMNIROUTE_URL`, `OMNIROUTE_API_KEY` | — | Keep memory in an OmniRoute server |
+| `OLLAMA_HOST` | `http://localhost:11434` | Ollama address |
+| `PORT` | `3000` | Port for `serve` |
+| `LAYA_CACHE` | `~/.cache/receptron-laya` | Where the Laya model is stored |
+| `HF_TOKEN` | — | Hugging Face token, if the Laya download needs one |
+| `SMART_ROUTER_HOME`, `SMART_ROUTER_NPM_SPEC` | — | Python wrapper: install folder, package to install |
 
-# Dashboard on another port, reachable from your network
-smart-router serve --port 8080 --host 0.0.0.0
-```
+`<TIER>` is `MICRO`, `CODER`, `REASONER` or `GENERAL`.
 
-`route --json` prints:
+## HTTP API
 
-```json
-{
-  "tier": "coder",
-  "modelName": "qwen2.5-coder:7b",
-  "complexityScore": "1.43",
-  "confidence": "100.0%",
-  "engine": "keyword",
-  "cached": false
-}
-```
+`smart-router serve` exposes:
 
-### Tiers
+| Method | Path | For |
+| --- | --- | --- |
+| `POST` | `/v1/messages` | Anthropic format (Claude Code) |
+| `POST` | `/v1/messages/count_tokens` | Claude Code token counts |
+| `POST` | `/v1/chat/completions` | OpenAI format (Copilot, Devin, Cursor, ...) |
+| `GET` | `/v1/models` | Model list, including `smart-router/auto` |
+| `POST` | `/api/route` with `{"prompt": "..."}` | The routing decision only |
+| `GET` | `/api/stream?model=...&prompt=...&session=...` | Dashboard answer from Ollama (Server-Sent Events) |
+| `GET` | `/api/status` | Engine, Ollama status, models, memory mode |
 
-| Tier       | Used for                                   | Looks for models named like      |
-|------------|--------------------------------------------|----------------------------------|
-| `micro`    | Greetings, chit-chat, short answers        | `phi`, `gemma`, `llama3.2:1b`    |
-| `coder`    | Code, scripts, bugs                        | `coder`, `code`, `qwen`          |
-| `reasoner` | Math, logic, multi-step reasoning          | `deepseek-r1`, `r1`, `reasoning` |
-| `general`  | Writing, summaries, everything else        | `llama3`, `mistral`, `latest`    |
+Every routed response carries headers that show what happened:
 
-If none of your models match a tier, it uses your first model. If Ollama is off, it picks from
-a default list (`phi:latest`, `qwen2.5-coder:7b`, `deepseek-r1:8b`, `llama3:latest`).
-
-## Engines and the Laya model
-
-| Engine            | What it does                                                       |
-|-------------------|--------------------------------------------------------------------|
-| `auto` (default)  | Uses Laya if it is already downloaded. Otherwise uses `keyword`.   |
-| `laya`            | Always uses Laya. Downloads it first if needed.                    |
-| `keyword`         | Fast word matching. Works offline. No download.                    |
-
-**Do I have to download 1.7 GB every time I install?** No.
-
-- Installing never downloads the model.
-- The model is downloaded only when you run `smart-router download` or use `-e laya`.
-- It is saved once per computer, in `~/.cache/receptron-laya`
-  (on Windows: `C:\Users\<you>\.cache\receptron-laya`).
-- Reinstalls, updates, `npx`, pipx and uv all reuse that same copy.
-- Change the folder with the `LAYA_CACHE` environment variable.
-- Laya needs about 2.5 GB of free RAM while running.
-
-Want AI routing? Run this once:
-
-```sh
-smart-router download
-```
-
-## Options and environment variables
-
-| Option                             | Env variable      | Default                  |
-|------------------------------------|-------------------|--------------------------|
-| `-e, --engine <auto\|laya\|keyword>`|                   | `auto`                   |
-| `--ollama-url <url>`               | `OLLAMA_HOST`     | `http://localhost:11434` |
-| `-p, --port <number>` (serve)      | `PORT`            | `3000`                   |
-| `--host <address>` (serve)         |                   | `127.0.0.1`              |
-| `--json` (route)                   |                   | off                      |
-| `-q, --quiet`                      |                   | off                      |
-|                                    | `LAYA_CACHE`      | `~/.cache/receptron-laya`|
-|                                    | `HF_TOKEN`        | Hugging Face token, if needed |
-|                                    | `SMART_ROUTER_MEMORY` | on (built in). `off` turns memory off |
-|                                    | `SMART_ROUTER_MEMORY_TOKENS` | `2000`. Most tokens of earlier context per request |
-|                                    | `OMNIROUTE_URL`   | Optional. Keep memory in an OmniRoute server |
-
-Settings for the Python wrapper:
-
-| Env variable            | What it does                                              |
-|-------------------------|-----------------------------------------------------------|
-| `SMART_ROUTER_HOME`     | Where the wrapper keeps its private npm install           |
-| `SMART_ROUTER_NPM_SPEC` | Install a different npm package, tarball or URL           |
-
-Exit codes: `0` success, `1` error (for example Ollama not reachable), `2` bad arguments.
-
-## Web dashboard and HTTP API
-
-```sh
-smart-router serve
-```
-
-Open http://localhost:3000, type a prompt, and watch the answer stream in.
-
-The same server has a small API:
-
-| Method | Path                                  | Returns                                 |
-|--------|---------------------------------------|-----------------------------------------|
-| `GET`  | `/api/status`                         | Engine, Ollama status, model list, memory |
-| `POST` | `/api/route` with `{"prompt": "..."}` | The routing decision (same as `--json`) |
-| `GET`  | `/api/stream?model=...&prompt=...`    | The answer as Server-Sent Events        |
+| Header | Meaning |
+| --- | --- |
+| `X-Smart-Router-Tier` | Tier picked, or `manual` when the client named a model |
+| `X-Smart-Router-Model` | Model the request was sent to |
+| `X-Smart-Router-Session` | Conversation the request belongs to |
+| `X-Smart-Router-Memory` | Earlier turns added, e.g. `2+summary` |
 
 ```sh
 curl -X POST http://localhost:3000/api/route \
@@ -338,63 +340,59 @@ curl -X POST http://localhost:3000/api/route \
 
 ## Use it as a library
 
-```sh
-npm install laya-smart-router
-```
-
 ```js
 import { IntelligentRouter } from "laya-smart-router";
 
 const router = new IntelligentRouter({ engine: "keyword" });
 await router.init();
 const decision = await router.processRequest("debug my rust code");
-console.log(decision.modelName); // e.g. "qwen2.5-coder:7b"
+console.log(decision.tier, decision.modelName);   // "coder" "qwen2.5-coder:7b"
 ```
 
-Also exported: `classifyWithKeywords`, `listOllamaModels`, `streamOllama`, `createApp`,
-`startServer`, `ROUTING_TIERS`.
+Also exported: `startServer`, `createApp`, `mountProxy`, `classifyWithKeywords`, `ROUTING_TIERS`,
+`claudeModels`, `openRouterModels`, `fitToClaudeModel`, `estimateTokens`, `lastUserText`,
+`ConversationMemory`, `LocalStore`, `OmniRouteStore`, `memoryFromEnv`, `listOllamaModels`,
+`streamOllama`.
 
-## Update and uninstall
+## Engines and the Laya model
 
-| Installed with | Update                                  | Uninstall                              |
-|----------------|-----------------------------------------|----------------------------------------|
-| npm            | `npm update -g laya-smart-router`       | `npm uninstall -g laya-smart-router`   |
-| pnpm           | `pnpm update -g laya-smart-router`      | `pnpm remove -g laya-smart-router`     |
-| yarn           | `yarn global upgrade laya-smart-router` | `yarn global remove laya-smart-router` |
-| bun            | `bun update -g laya-smart-router`       | `bun remove -g laya-smart-router`      |
-| pipx           | `pipx upgrade laya-smart-router`        | `pipx uninstall laya-smart-router`     |
-| uv             | `uv tool upgrade laya-smart-router`     | `uv tool uninstall laya-smart-router`  |
-| pip            | `pip install -U laya-smart-router`      | `pip uninstall laya-smart-router`      |
+| Engine | What it does |
+| --- | --- |
+| `auto` (default) | Laya if it is already downloaded, else `keyword` |
+| `keyword` | Fast word matching. Offline. No download. |
+| `laya` | [Laya](https://huggingface.co/convaiinnovations/laya), a small AI decision model |
 
-To also free the disk space used by the Laya model, delete `~/.cache/receptron-laya`.
+Laya is never downloaded on install. Run `smart-router download` once to get it (~2 GB). It is
+stored once per computer in `~/.cache/receptron-laya`, needs about 2.5 GB of free RAM, and every
+install reuses it.
 
 ## Troubleshooting
 
-Start with `smart-router doctor`. It checks everything below.
+Start with `smart-router doctor`.
 
 | Problem | Fix |
-|---------|-----|
-| `npm error 404` on install | The npm release is not out yet. Install from GitHub (see above). |
-| `smart-router: command not found` | Open a new terminal. For npm, check `npm prefix -g` is on your PATH. For pipx, run `pipx ensurepath`. |
-| `Permission denied` on macOS/Linux | Update to the latest version, or reinstall. |
-| `EACCES` during `npm install -g` | Don't use `sudo`. Use a Node version manager (nvm, fnm, volta) or `npm config set prefix ~/.npm-global`. |
-| `Ollama not reachable` | Install Ollama and run `ollama serve`, or pass `--ollama-url`. |
+| --- | --- |
+| `npm error 404` on install | The npm release is not out yet. [Install from GitHub](#install). |
+| `smart-router: command not found` | Open a new terminal. Check `npm prefix -g` is on your PATH. |
+| Claude Code: `max_tokens: 128000 > 64000 ... claude-haiku-4-5` | Update Smart Router; requests sent to Haiku are now adjusted. |
+| "hey" goes to Sonnet, not Haiku | Update Smart Router. If the log says "too long for Haiku", the chat is over ~130K tokens; that is expected. |
+| Claude Code cannot connect | `smart-router serve` must be running. Or remove `ANTHROPIC_BASE_URL`. |
+| OpenAI-format tool gets `401` | Set `OPENROUTER_API_KEY`, or enter your OpenRouter key in the tool. |
+| `Ollama not reachable` | Run `ollama serve`, or pass `--ollama-url`. |
 | Ollama has no models | `ollama pull llama3` (and e.g. `ollama pull qwen2.5-coder:7b`). |
-| `onnxruntime-node` fails to install | Set `ONNXRUNTIME_NODE_INSTALL=skip` and install again. Laya runs on the CPU, so nothing is lost. |
-| Laya download fails | Check your internet access to `huggingface.co`, or use `-e keyword`. |
-| pipx says Node.js is missing | Install Node.js 20+ from https://nodejs.org. |
+| `EACCES` during `npm install -g` | Don't use `sudo`. Use nvm/fnm/volta, or `npm config set prefix ~/.npm-global`. |
+| `onnxruntime-node` fails to install | Set `ONNXRUNTIME_NODE_INSTALL=skip` and install again. |
 
 ## Development
 
 ```sh
 npm install
-npm test            # build + run all tests
-npm run dev         # rebuild on save
-npm start           # build + open the dashboard
+npm test        # build + run all tests
+npm run dev     # rebuild on save
 ```
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for all scripts and how to release, and
-[CHANGELOG.md](CHANGELOG.md) for changes.
+`dist/` is committed so installs from GitHub work; run `npm run build` before you commit. See
+[CONTRIBUTING.md](CONTRIBUTING.md) and [CHANGELOG.md](CHANGELOG.md).
 
 ## License
 
